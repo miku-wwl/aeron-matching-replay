@@ -7,9 +7,9 @@ $env:MAVEN_OPTS = "--add-opens java.base/jdk.internal.misc=ALL-UNNAMED --add-ope
 
 Push-Location $repoRoot
 try {
-    & ".\mvnw.cmd" clean install
+    & ".\mvnw.cmd" -ntp clean verify
     if ($LASTEXITCODE -ne 0) {
-        throw "Maven build failed with exit code $LASTEXITCODE"
+        throw "Maven verification failed with exit code $LASTEXITCODE"
     }
 }
 finally {

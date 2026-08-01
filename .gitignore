@@ -4,16 +4,6 @@
 target/
 .tmp-*/
 
-runtime/aeron/*
-runtime/archive/*
 runtime/checkpoints/*
-runtime/logs/*
-runtime/manifests/*
-runtime/pids/*
 
-!runtime/aeron/.gitkeep
-!runtime/archive/.gitkeep
 !runtime/checkpoints/.gitkeep
-!runtime/logs/.gitkeep
-!runtime/manifests/.gitkeep
-!runtime/pids/.gitkeep

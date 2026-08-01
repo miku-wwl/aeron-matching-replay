@@ -1,31 +1,25 @@
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess)]
 param()
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$runtimeRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "runtime"))
-$repoPrefix = $repoRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) +
+$checkpointRoot = [System.IO.Path]::GetFullPath(
+    (Join-Path $repoRoot "runtime\checkpoints"))
+$expectedPrefix = $repoRoot.TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar) +
     [System.IO.Path]::DirectorySeparatorChar
 
-if (-not $runtimeRoot.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to clean runtime outside repository: $runtimeRoot"
+if (-not $checkpointRoot.StartsWith(
+    $expectedPrefix,
+    [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to clean outside repository: $checkpointRoot"
 }
 
-$directories = @("aeron", "archive", "checkpoints", "manifests", "logs", "pids")
-foreach ($name in $directories) {
-    $target = [System.IO.Path]::GetFullPath((Join-Path $runtimeRoot $name))
-    if (-not $target.StartsWith(
-        $runtimeRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) +
-            [System.IO.Path]::DirectorySeparatorChar,
-        [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to clean unexpected path: $target"
-    }
-    if (Test-Path -LiteralPath $target) {
-        Remove-Item -LiteralPath $target -Recurse -Force
-    }
-    New-Item -ItemType Directory -Path $target -Force | Out-Null
-    New-Item -ItemType File -Path (Join-Path $target ".gitkeep") -Force | Out-Null
+if ($PSCmdlet.ShouldProcess($checkpointRoot, "Remove replay checkpoints")) {
+    Get-ChildItem -LiteralPath $checkpointRoot -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne ".gitkeep" } |
+        Remove-Item -Force
 }
 
-Write-Host "RUNTIME_CLEAN"
-Write-Host "runtimeDirectory=$runtimeRoot"
+Write-Host "CHECKPOINTS_CLEAN"
+Write-Host "checkpointDirectory=$checkpointRoot"

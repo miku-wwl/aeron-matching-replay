@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: aeron-replay-service
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+matching-replay:
+  aeron-directory: ${AERON_DIR:${java.io.tmpdir}/aeron-default}
+  checkpoint-directory: ${REPLAY_CHECKPOINT_DIR:./runtime/checkpoints}
+  replay-channel: ${REPLAY_CHANNEL:aeron:ipc}
+  replay-stream-id: ${REPLAY_STREAM_ID:1002}
+  timeout: ${REPLAY_TIMEOUT:20s}
+  fragment-limit: ${REPLAY_FRAGMENT_LIMIT:20}
+  checkpoint-every: ${REPLAY_CHECKPOINT_EVERY:100}
+  worker-count: ${REPLAY_WORKER_COUNT:1}
+  queue-capacity: ${REPLAY_QUEUE_CAPACITY:100}
+  archive:
+    control-request-channel: ${ARCHIVE_CONTROL_REQUEST_CHANNEL:aeron:ipc?term-length=64k}
+    control-request-stream-id: ${ARCHIVE_CONTROL_REQUEST_STREAM_ID:10}
+    control-response-channel: ${ARCHIVE_CONTROL_RESPONSE_CHANNEL:aeron:ipc}
