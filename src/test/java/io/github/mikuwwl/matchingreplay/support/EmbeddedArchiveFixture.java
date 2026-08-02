@@ -109,6 +109,45 @@ public final class EmbeddedArchiveFixture implements AutoCloseable
                 ReplayDigest.INITIAL_VALUE));
     }
 
+    public LiveRecording startLiveRecording()
+    {
+        final Aeron aeron = connectAeron("live-test-publisher");
+        final AeronArchive archive = connectArchive(aeron, "live-test-archive");
+        final long recordingSubscriptionId = archive.startRecording(
+            LIVE_CHANNEL,
+            LIVE_STREAM_ID,
+            SourceLocation.LOCAL);
+        final ExclusivePublication publication = aeron.addExclusivePublication(
+            LIVE_CHANNEL,
+            LIVE_STREAM_ID);
+        try
+        {
+            await(() -> publication.isConnected(), "live publication connection");
+            final int counterId = awaitRecordingCounter(
+                aeron.countersReader(),
+                publication.sessionId(),
+                archive.archiveId());
+            final long recordingId = RecordingPos.getRecordingId(
+                aeron.countersReader(),
+                counterId);
+            return new LiveRecording(
+                aeron,
+                archive,
+                publication,
+                recordingSubscriptionId,
+                counterId,
+                recordingId);
+        }
+        catch (final RuntimeException ex)
+        {
+            publication.close();
+            archive.tryStopRecording(recordingSubscriptionId);
+            archive.close();
+            aeron.close();
+            throw ex;
+        }
+    }
+
     private Recording recordEncoded(
         final List<byte[]> messages,
         final List<Long> replayDigests)
@@ -304,6 +343,112 @@ public final class EmbeddedArchiveFixture implements AutoCloseable
                     "eventSequence must be within [1, " + eventCount + "]");
             }
             return Math.toIntExact(eventSequence - 1);
+        }
+    }
+
+    public final class LiveRecording implements AutoCloseable
+    {
+        private final Aeron aeron;
+        private final AeronArchive archive;
+        private final ExclusivePublication publication;
+        private final long recordingSubscriptionId;
+        private final int counterId;
+        private final long recordingId;
+        private final MatchingEventSbeEncoder encoder = new MatchingEventSbeEncoder();
+        private final UnsafeBuffer encodeBuffer = new UnsafeBuffer(
+            new byte[MatchingEventSbeEncoder.MAX_ENCODED_LENGTH]);
+        private final List<Long> eventEndPositions = new ArrayList<>();
+        private final List<Long> replayDigests = new ArrayList<>();
+
+        private long replayDigest = ReplayDigest.INITIAL_VALUE;
+        private boolean closed;
+
+        private LiveRecording(
+            final Aeron aeron,
+            final AeronArchive archive,
+            final ExclusivePublication publication,
+            final long recordingSubscriptionId,
+            final int counterId,
+            final long recordingId)
+        {
+            this.aeron = aeron;
+            this.archive = archive;
+            this.publication = publication;
+            this.recordingSubscriptionId = recordingSubscriptionId;
+            this.counterId = counterId;
+            this.recordingId = recordingId;
+        }
+
+        public void publish(final List<MatchingEvent> events)
+        {
+            ensureOpen();
+            for (final MatchingEvent event : events)
+            {
+                final int length = encoder.encode(event, encodeBuffer, 0);
+                final long position = offer(
+                    publication,
+                    encodeBuffer,
+                    length,
+                    event.eventSequence());
+                eventEndPositions.add(position);
+                replayDigest = ReplayDigest.mixEvent(replayDigest, event);
+                replayDigests.add(replayDigest);
+            }
+            final long publishedPosition = publication.position();
+            await(
+                () -> aeron.countersReader().getCounterValue(counterId) >=
+                    publishedPosition,
+                "live Archive recording position");
+        }
+
+        public Recording captureBoundary()
+        {
+            ensureOpen();
+            final long stopPosition =
+                aeron.countersReader().getCounterValue(counterId);
+            final long startPosition = archive.getStartPosition(recordingId);
+            return new Recording(
+                recordingId,
+                startPosition,
+                stopPosition,
+                eventEndPositions.size(),
+                replayDigest,
+                eventEndPositions,
+                replayDigests);
+        }
+
+        public boolean isLive()
+        {
+            return !closed &&
+                archive.getRecordingPosition(recordingId) != AeronArchive.NULL_POSITION;
+        }
+
+        @Override
+        public void close()
+        {
+            if (closed)
+            {
+                return;
+            }
+            closed = true;
+            try
+            {
+                archive.tryStopRecording(recordingSubscriptionId);
+            }
+            finally
+            {
+                publication.close();
+                archive.close();
+                aeron.close();
+            }
+        }
+
+        private void ensureOpen()
+        {
+            if (closed)
+            {
+                throw new IllegalStateException("Live recording is closed");
+            }
         }
     }
 

@@ -3,10 +3,12 @@
 ## Build, verify, and demonstrate
 
 ```powershell
+.\mvnw.cmd --version
 .\mvnw.cmd -ntp clean verify
 .\scripts\demo-replay.ps1
 ```
 
+The wrapper downloads Maven 3.9.9 from Maven Central.
 `clean verify` regenerates SBE Java under `target/generated-sources/sbe`, runs
 unit and API tests, starts a real embedded `ArchivingMediaDriver` for the
 integration matrix, and terminates a child replay JVM with `Runtime.halt(77)`
@@ -89,10 +91,10 @@ REPLAY_VERIFICATION_FAILED
 REPLAY_FAILED
 ```
 
-Every lifecycle event contains `jobId`; MDC carries `jobId`, `correlationId`,
-and `recordingId`. Position, sequence, counters, failure code, and duration are
-included where relevant. Logging occurs at lifecycle/checkpoint boundaries, not
-for every event.
+Every lifecycle event contains `jobId`; MDC carries `jobId`, `attemptId`,
+`correlationId`, and `recordingId`. Position, sequence, counters, failure code,
+and duration are included where relevant. Logging occurs at
+lifecycle/checkpoint boundaries, not for every event.
 
 ## Micrometer metrics
 
@@ -123,13 +125,16 @@ Invoke-RestMethod http://localhost:8080/actuator/metrics/replay.position.lag
 ## Replay state handling
 
 Progress checkpoints are stored directly in the configured directory.
-Completion proofs are separate and live in its `completion-proofs` child
-directory. Do not edit either manually.
+Completion proofs are separate immutable files under
+`completion-proofs/{checkpointKey}/{attemptId}.properties`. Do not edit either
+artifact manually.
 
-Writes force a temporary file and require atomic replacement on the same
-filesystem. Unsupported atomic move fails the job instead of silently
-degrading. This does not guarantee parent-directory `fsync`, device durability,
-or replication; storage must be selected for the deployment failure model.
+Checkpoint writes force a temporary file and require atomic replacement on the
+same filesystem. Proof writes force complete temporary content, then atomically
+create a hard link that fails if the attempt already exists. Unsupported atomic
+filesystem behavior fails the job instead of silently degrading. This does not
+guarantee parent-directory `fsync`, device durability, or replication; storage
+must be selected for the deployment failure model.
 
 To deliberately remove local development replay state:
 
@@ -142,15 +147,18 @@ This removes both progress checkpoints and completion proofs but preserves
 
 ## Failure behavior
 
-- A decode/schema failure or sequence gap stops immediately and cannot advance
-  the checkpoint past the invalid fragment.
+- A decode/schema/template/block-length failure or sequence gap stops
+  immediately and cannot advance the checkpoint past the invalid fragment.
 - A healthy replay can run longer than `REPLAY_NO_PROGRESS_TIMEOUT` while its
   Position continues to advance.
-- A stalled replay fails with `NO_PROGRESS_TIMEOUT` and diagnostics.
+- A stalled replay fails with `NO_PROGRESS_TIMEOUT`, elapsed/configured timeout
+  values, and its last successfully processed Position/sequence.
 - A final progress checkpoint is written when the bounded Position is reached.
 - A verification mismatch retains that checkpoint, returns expected/actual
   values, and creates no new completion proof.
-- A completion proof is written atomically only for a `VERIFIED` result.
+- A new immutable completion proof is created only for a `VERIFIED` attempt.
+  Replays sharing a checkpoint key—including no-op verification—retain
+  separate proof files.
 
 ## Publication, recording, and durability
 

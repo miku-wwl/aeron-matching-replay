@@ -10,6 +10,7 @@ import java.util.UUID;
 
 public record ReplayJobSnapshot(
     UUID jobId,
+    UUID attemptId,
     ReplayCommand command,
     ReplayJobState state,
     Instant acceptedAt,
@@ -23,6 +24,7 @@ public record ReplayJobSnapshot(
     {
         return new ReplayJobSnapshot(
             jobId,
+            attemptId,
             command,
             state,
             acceptedAt,

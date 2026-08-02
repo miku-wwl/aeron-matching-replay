@@ -2,6 +2,7 @@ package io.github.mikuwwl.matchingreplay.application;
 
 import io.github.mikuwwl.matchingreplay.aeron.ReplayCommand;
 import io.github.mikuwwl.matchingreplay.aeron.ReplayEngine;
+import io.github.mikuwwl.matchingreplay.aeron.ReplayAttempt;
 import io.github.mikuwwl.matchingreplay.aeron.ReplayProgress;
 import io.github.mikuwwl.matchingreplay.aeron.ReplayResult;
 import io.github.mikuwwl.matchingreplay.failure.ReplayException;
@@ -76,8 +77,10 @@ public class ReplayJobManager implements ReplayJobs
         }
 
         final UUID jobId = UUID.randomUUID();
+        final UUID attemptId = UUID.randomUUID();
         final ReplayJobSnapshot queued = new ReplayJobSnapshot(
             jobId,
+            attemptId,
             command,
             ReplayJobState.QUEUED,
             clock.instant(),
@@ -125,6 +128,7 @@ public class ReplayJobManager implements ReplayJobs
 
         final ReplayJobSnapshot running = new ReplayJobSnapshot(
             jobId,
+            queued.attemptId(),
             queued.command(),
             ReplayJobState.RUNNING,
             queued.acceptedAt(),
@@ -138,6 +142,9 @@ public class ReplayJobManager implements ReplayJobs
         try (MDC.MDCCloseable ignoredJob = MDC.putCloseable(
                 "jobId",
                 jobId.toString());
+            MDC.MDCCloseable ignoredAttempt = MDC.putCloseable(
+                "attemptId",
+                queued.attemptId().toString());
             MDC.MDCCloseable ignoredCorrelation = MDC.putCloseable(
                 "correlationId",
                 nullToEmpty(queued.command().correlationId()));
@@ -146,8 +153,10 @@ public class ReplayJobManager implements ReplayJobs
                 Long.toString(queued.command().recordingId())))
         {
             LOGGER.info(
-                "REPLAY_STARTED jobId={} correlationId={} recordingId={} checkpointKey={}",
+                "REPLAY_STARTED jobId={} attemptId={} correlationId={} " +
+                    "recordingId={} checkpointKey={}",
                 jobId,
+                queued.attemptId(),
                 queued.command().correlationId(),
                 queued.command().recordingId(),
                 queued.command().checkpointKey());
@@ -155,6 +164,7 @@ public class ReplayJobManager implements ReplayJobs
             {
                 final ReplayResult result = replayEngine.replay(
                     queued.command(),
+                    new ReplayAttempt(jobId, queued.attemptId()),
                     progress -> updateProgress(jobId, progress));
                 complete(jobId, queued, result);
             }
@@ -175,6 +185,12 @@ public class ReplayJobManager implements ReplayJobs
         final ReplayJobSnapshot queued,
         final ReplayResult result)
     {
+        if (!jobId.equals(result.jobId()) ||
+            !queued.attemptId().equals(result.attemptId()))
+        {
+            throw new IllegalStateException(
+                "Replay result identity does not match active job/attempt");
+        }
         final ReplayJobState state = result.verificationPassed() ?
             ReplayJobState.VERIFIED : ReplayJobState.VERIFICATION_FAILED;
         final ReplayFailure failure = result.verificationPassed() ?
@@ -189,6 +205,7 @@ public class ReplayJobManager implements ReplayJobs
         final ReplayJobSnapshot current = jobs.get(jobId);
         final ReplayJobSnapshot terminal = new ReplayJobSnapshot(
             jobId,
+            queued.attemptId(),
             queued.command(),
             state,
             queued.acceptedAt(),
@@ -207,10 +224,11 @@ public class ReplayJobManager implements ReplayJobs
         if (result.verificationPassed())
         {
             LOGGER.info(
-                "REPLAY_VERIFIED jobId={} correlationId={} recordingId={} " +
+                "REPLAY_VERIFIED jobId={} attemptId={} correlationId={} recordingId={} " +
                     "replayStartPosition={} replayStopPosition={} finalEventSequence={} " +
                     "finalReplayDigest={} durationMs={}",
                 jobId,
+                queued.attemptId(),
                 queued.command().correlationId(),
                 queued.command().recordingId(),
                 result.replayStartPosition(),
@@ -222,10 +240,12 @@ public class ReplayJobManager implements ReplayJobs
         else
         {
             LOGGER.warn(
-                "REPLAY_VERIFICATION_FAILED jobId={} correlationId={} recordingId={} " +
+                "REPLAY_VERIFICATION_FAILED jobId={} attemptId={} correlationId={} " +
+                    "recordingId={} " +
                     "expectedLastEventSequence={} actualLastEventSequence={} " +
                     "expectedReplayDigest={} actualReplayDigest={}",
                 jobId,
+                queued.attemptId(),
                 queued.command().correlationId(),
                 queued.command().recordingId(),
                 result.expectedLastEventSequence(),
@@ -247,6 +267,7 @@ public class ReplayJobManager implements ReplayJobs
             current.progress());
         final ReplayJobSnapshot terminal = new ReplayJobSnapshot(
             jobId,
+            queued.attemptId(),
             queued.command(),
             ReplayJobState.FAILED,
             queued.acceptedAt(),
@@ -263,9 +284,11 @@ public class ReplayJobManager implements ReplayJobs
             terminal.progress(),
             failure);
         LOGGER.error(
-            "REPLAY_FAILED jobId={} correlationId={} recordingId={} failureCode={} " +
+            "REPLAY_FAILED jobId={} attemptId={} correlationId={} recordingId={} " +
+                "failureCode={} " +
                 "currentPosition={} lastEventSequence={} message={}",
             jobId,
+            queued.attemptId(),
             queued.command().correlationId(),
             queued.command().recordingId(),
             failure.code(),
@@ -332,6 +355,9 @@ public class ReplayJobManager implements ReplayJobs
         try (MDC.MDCCloseable ignoredJob = MDC.putCloseable(
                 "jobId",
                 queued.jobId().toString());
+            MDC.MDCCloseable ignoredAttempt = MDC.putCloseable(
+                "attemptId",
+                queued.attemptId().toString());
             MDC.MDCCloseable ignoredCorrelation = MDC.putCloseable(
                 "correlationId",
                 nullToEmpty(queued.command().correlationId()));
@@ -340,9 +366,10 @@ public class ReplayJobManager implements ReplayJobs
                 Long.toString(queued.command().recordingId())))
         {
             LOGGER.info(
-                "REPLAY_REQUEST_ACCEPTED jobId={} correlationId={} recordingId={} " +
+                "REPLAY_REQUEST_ACCEPTED jobId={} attemptId={} correlationId={} recordingId={} " +
                     "checkpointKey={} requestedStopPosition={}",
                 queued.jobId(),
+                queued.attemptId(),
                 queued.command().correlationId(),
                 queued.command().recordingId(),
                 queued.command().checkpointKey(),

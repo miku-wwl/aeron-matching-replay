@@ -22,6 +22,8 @@ class ReplayMetricsTest
         final ReplayMetrics metrics = new ReplayMetrics(registry);
         final UUID jobId = UUID.randomUUID();
         final ReplayResult result = new ReplayResult(
+            UUID.randomUUID(),
+            UUID.randomUUID(),
             42,
             "orders",
             64,

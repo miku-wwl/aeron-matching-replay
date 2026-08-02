@@ -6,6 +6,7 @@ import io.github.mikuwwl.matchingreplay.checkpoint.CompletionProof;
 import io.github.mikuwwl.matchingreplay.checkpoint.CompletionProofRepository;
 import io.github.mikuwwl.matchingreplay.codec.MatchingEventSbeEncoder;
 import io.github.mikuwwl.matchingreplay.codec.generated.MessageHeaderEncoder;
+import io.github.mikuwwl.matchingreplay.codec.generated.OrderAcceptedDecoder;
 import io.github.mikuwwl.matchingreplay.config.ReplayProperties;
 import io.github.mikuwwl.matchingreplay.domain.EventType;
 import io.github.mikuwwl.matchingreplay.domain.MatchingEvent;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.LongStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -60,9 +62,93 @@ class ReplayFailureScenarioIntegrationTest
             assertEquals(
                 boundedStop,
                 new CompletionProofRepository(properties)
-                    .find("bounded")
+                    .findByAttemptId("bounded", result.attemptId())
                     .orElseThrow()
                     .replayStopPosition());
+        }
+    }
+
+    @Test
+    void boundedReplayDoesNotFollowEventsAppendedAfterCapturedStopPosition()
+    {
+        try (EmbeddedArchiveFixture archive = fixture("live-bounded");
+            EmbeddedArchiveFixture.LiveRecording live =
+                archive.startLiveRecording())
+        {
+            live.publish(events(1, 5));
+            final EmbeddedArchiveFixture.Recording boundary =
+                live.captureBoundary();
+            live.publish(events(6, 10));
+            assertTrue(live.isLive());
+            final ReplayProperties properties = properties(archive, "live-bounded");
+            final AtomicReference<ReplayProgress> finalProgress =
+                new AtomicReference<>();
+
+            final ReplayResult result = coordinator(properties).replay(
+                new ReplayCommand(
+                    boundary.recordingId(),
+                    "live-bounded",
+                    boundary.stopPosition(),
+                    5,
+                    boundary.expectedReplayDigest(),
+                    "live-bounded-test"),
+                finalProgress::set);
+
+            assertTrue(result.verificationPassed());
+            assertEquals(5, result.finalEventSequence());
+            assertEquals(5, result.appliedEventsThisRun());
+            assertEquals(boundary.stopPosition(), result.replayStopPosition());
+            assertEquals(boundary.expectedReplayDigest(), result.finalReplayDigest());
+            assertEquals(100.0, finalProgress.get().progressPercent());
+            assertEquals(
+                boundary.stopPosition(),
+                new CompletionProofRepository(properties)
+                    .findByAttemptId("live-bounded", result.attemptId())
+                    .orElseThrow()
+                    .replayStopPosition());
+            assertTrue(live.isLive());
+        }
+    }
+
+    @Test
+    void noOpReplayCreatesSeparateProof()
+    {
+        try (EmbeddedArchiveFixture archive = fixture("no-op-proof"))
+        {
+            final EmbeddedArchiveFixture.Recording recording =
+                archive.record(events(1, 3));
+            final ReplayProperties properties = properties(archive, "no-op-proof");
+            final AeronReplayCoordinator coordinator = coordinator(properties);
+            final ReplayCommand command = new ReplayCommand(
+                recording.recordingId(),
+                "no-op-proof",
+                recording.stopPosition(),
+                recording.eventCount(),
+                recording.expectedReplayDigest(),
+                "no-op-proof-test");
+
+            final ReplayResult first = coordinator.replay(command);
+            final ReplayResult noOp = coordinator.replay(command);
+
+            assertTrue(first.verificationPassed());
+            assertTrue(noOp.verificationPassed());
+            assertEquals(recording.startPosition(), first.replayStartPosition());
+            assertEquals(recording.stopPosition(), noOp.replayStartPosition());
+            assertEquals(0, noOp.appliedEventsThisRun());
+            final List<CompletionProof> proofs =
+                new CompletionProofRepository(properties)
+                    .findByCheckpointKey("no-op-proof");
+            assertEquals(2, proofs.size());
+            assertFalse(proofs.stream()
+                .filter(proof -> proof.attemptId().equals(first.attemptId()))
+                .findFirst()
+                .orElseThrow()
+                .resumedFromCheckpoint());
+            assertTrue(proofs.stream()
+                .filter(proof -> proof.attemptId().equals(noOp.attemptId()))
+                .findFirst()
+                .orElseThrow()
+                .resumedFromCheckpoint());
         }
     }
 
@@ -140,7 +226,10 @@ class ReplayFailureScenarioIntegrationTest
                 new CheckpointRepository(properties).find("gap").orElseThrow();
             assertEquals(2, checkpoint.lastAppliedEventSequence());
             assertEquals(recording.eventEndPositions().get(1), checkpoint.lastAppliedAeronPosition());
-            assertTrue(new CompletionProofRepository(properties).find("gap").isEmpty());
+            assertTrue(
+                new CompletionProofRepository(properties)
+                    .findByCheckpointKey("gap")
+                    .isEmpty());
         }
     }
 
@@ -173,11 +262,71 @@ class ReplayFailureScenarioIntegrationTest
             assertEquals(1, exception.failure().templateId());
             assertEquals(100, exception.failure().schemaId());
             assertEquals(99, exception.failure().actingVersion());
+            assertEquals(
+                recording.eventEndPositions().get(1),
+                exception.failure().fragmentPosition());
             final Checkpoint checkpoint =
                 new CheckpointRepository(properties).find("invalid-sbe").orElseThrow();
             assertEquals(1, checkpoint.lastAppliedEventSequence());
             assertEquals(recording.eventEndPositions().getFirst(), checkpoint.lastAppliedAeronPosition());
-            assertTrue(new CompletionProofRepository(properties).find("invalid-sbe").isEmpty());
+            assertTrue(
+                new CompletionProofRepository(properties)
+                    .findByCheckpointKey("invalid-sbe")
+                    .isEmpty());
+        }
+    }
+
+    @Test
+    void invalidActingBlockLengthDoesNotAdvanceCheckpoint()
+    {
+        try (EmbeddedArchiveFixture archive = fixture("invalid-block-length"))
+        {
+            final byte[] valid = encoded(event(1));
+            final byte[] invalid = encoded(event(2));
+            final int minimumBlockLength = OrderAcceptedDecoder.BLOCK_LENGTH;
+            new MessageHeaderEncoder()
+                .wrap(new UnsafeBuffer(invalid), 0)
+                .blockLength(minimumBlockLength - 1);
+            final EmbeddedArchiveFixture.Recording recording =
+                archive.recordRaw(List.of(valid, invalid));
+            final ReplayProperties properties =
+                properties(archive, "invalid-block-length");
+            properties.setCheckpointEveryProcessedMessages(1);
+
+            final ReplayException exception = assertThrows(
+                ReplayException.class,
+                () -> coordinator(properties).replay(new ReplayCommand(
+                    recording.recordingId(),
+                    "invalid-block-length",
+                    recording.stopPosition(),
+                    2,
+                    ReplayDigest.INITIAL_VALUE,
+                    "invalid-block-length-test")));
+
+            assertEquals(ReplayFailureCode.SBE_DECODE_FAILED, exception.failure().code());
+            assertEquals(1, exception.failure().templateId());
+            assertEquals(100, exception.failure().schemaId());
+            assertEquals(2, exception.failure().actingVersion());
+            assertEquals(
+                minimumBlockLength - 1,
+                exception.failure().actingBlockLength());
+            assertEquals(
+                minimumBlockLength,
+                exception.failure().minimumSupportedBlockLength());
+            assertEquals(
+                recording.eventEndPositions().get(1),
+                exception.failure().fragmentPosition());
+            final Checkpoint checkpoint = new CheckpointRepository(properties)
+                .find("invalid-block-length")
+                .orElseThrow();
+            assertEquals(1, checkpoint.lastAppliedEventSequence());
+            assertEquals(
+                recording.eventEndPositions().getFirst(),
+                checkpoint.lastAppliedAeronPosition());
+            assertTrue(
+                new CompletionProofRepository(properties)
+                    .findByCheckpointKey("invalid-block-length")
+                    .isEmpty());
         }
     }
 
@@ -200,7 +349,7 @@ class ReplayFailureScenarioIntegrationTest
                 "mismatch-test"));
 
             assertFalse(mismatch.verificationPassed());
-            assertTrue(proofs.find("mismatch-only").isEmpty());
+            assertTrue(proofs.findByCheckpointKey("mismatch-only").isEmpty());
             assertEquals(
                 recording.stopPosition(),
                 new CheckpointRepository(properties)
@@ -216,7 +365,9 @@ class ReplayFailureScenarioIntegrationTest
                 recording.expectedReplayDigest(),
                 "verified-test"));
             assertTrue(verified.verificationPassed());
-            final CompletionProof original = proofs.find("existing-proof").orElseThrow();
+            final CompletionProof original = proofs
+                .findByAttemptId("existing-proof", verified.attemptId())
+                .orElseThrow();
 
             final ReplayResult laterMismatch = coordinator.replay(new ReplayCommand(
                 recording.recordingId(),
@@ -227,7 +378,10 @@ class ReplayFailureScenarioIntegrationTest
                 "later-mismatch-test"));
 
             assertFalse(laterMismatch.verificationPassed());
-            assertEquals(original, proofs.find("existing-proof").orElseThrow());
+            assertEquals(
+                original,
+                proofs.findByAttemptId("existing-proof", verified.attemptId()).orElseThrow());
+            assertEquals(1, proofs.findByCheckpointKey("existing-proof").size());
         }
     }
 

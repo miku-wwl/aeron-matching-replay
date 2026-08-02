@@ -49,12 +49,14 @@ the configured worker count.
    checkpoint.
 10. At the bounded stop, write the final progress checkpoint and verify the
     expected sequence and digest.
-11. Write a separate completion proof only on a match, then mark the job
-    `VERIFIED`.
+11. Atomically create a separate immutable
+    `{checkpointKey}/{attemptId}.properties` proof only on a match, then mark
+    the job `VERIFIED`.
 
 If verification fails, the completed progress checkpoint is retained because
 processed projection effects may already be committed. No completion proof is
-created or overwritten.
+created. Each later successful attempt receives a new `attemptId`, so neither a
+normal retry nor a no-op verification can overwrite historical evidence.
 
 ## Position and sequence invariants
 
@@ -100,22 +102,35 @@ updatedAt=2026-08-02T00:00:00Z
 
 ### Completion proof
 
-Stored under `runtime/checkpoints/completion-proofs` only after verification:
+Stored only after verification:
+
+```text
+runtime/checkpoints/completion-proofs/
+  orders-projection/
+    5c40f71e-6417-4ac3-a775-0a18542027db.properties
+```
 
 ```properties
+jobId=e97a6293-9a21-4954-a657-f407ca271b40
+attemptId=5c40f71e-6417-4ac3-a775-0a18542027db
+correlationId=recovery-2026-08-02
 checkpointKey=orders-projection
 recordingId=42
 replayStartPosition=434080
 replayStopPosition=1349472
 finalEventSequence=12425
 finalReplayDigest=18013645834701933210
+resumedFromCheckpoint=true
 verificationStatus=VERIFIED
 completedAt=2026-08-02T00:00:01Z
 ```
 
-Both use a forced temporary file and require same-filesystem atomic replacement.
-This is a process-crash invariant on a supporting filesystem, not a claim that
-the parent directory, device, or remote replica has committed.
+Checkpoint replacement uses a forced temporary file and same-filesystem atomic
+move. Proof creation uses a forced temporary inode followed by an atomic hard
+link; link creation fails if that attempt's target already exists. This
+preserves immutable attempt history. These are process-crash invariants on a
+supporting filesystem, not claims that the parent directory, device, or remote
+replica has committed.
 
 ## Digest definition
 
@@ -147,6 +162,12 @@ The current decoder accepts:
 - v2 messages, where optional `sourceId` is present;
 - no future acting version, which fails with `UNSUPPORTED_SCHEMA`.
 
+Before a generated decoder is wrapped, `actingBlockLength` is validated against
+the generated v1 or v2 minimum for that specific template. A short/corrupt
+block returns `SBE_DECODE_FAILED` with both lengths and the fragment end
+Position; the checkpoint remains at the preceding valid fragment. Unknown
+templates use `UNSUPPORTED_TEMPLATE`, separately from schema-level failures.
+
 The field is deliberately excluded from the digest so reading the same
 historical business event through either supported encoding does not change its
 proof.
@@ -157,7 +178,8 @@ The handler emits immutable `ReplayProgress` snapshots. Position is monotonic,
 bounded by the stop Position, and drives a no-progress watchdog. Any Position
 advance refreshes the watchdog, so a healthy large replay may take longer than
 `noProgressTimeout`. An optional `maximumReplayDuration` is a distinct absolute
-limit.
+limit. The Coordinator uses an injectable monotonic clock so timeout behavior
+can be tested deterministically across the full job lifecycle.
 
 ## Archive durability boundary
 

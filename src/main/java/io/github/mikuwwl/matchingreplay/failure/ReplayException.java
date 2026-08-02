@@ -35,4 +35,11 @@ public class ReplayException extends RuntimeException
                 lastEventSequence),
             this);
     }
+
+    public ReplayException withFragmentPosition(final long fragmentPosition)
+    {
+        return new ReplayException(
+            failure.withFragmentPosition(fragmentPosition),
+            this);
+    }
 }

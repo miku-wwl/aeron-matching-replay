@@ -28,6 +28,8 @@ class ReplayControllerTest
 {
     private static final UUID JOB_ID =
         UUID.fromString("844aa1ef-8c6f-4b49-b5f3-99450dc39a53");
+    private static final UUID ATTEMPT_ID =
+        UUID.fromString("c6d40df0-86c3-4338-b783-22f1470442e2");
 
     private MockMvc mockMvc;
 
@@ -38,6 +40,7 @@ class ReplayControllerTest
             new ReplayCommand(42, "orders", 1024L, 300L, 123L, "incident-9");
         final ReplayJobSnapshot snapshot = new ReplayJobSnapshot(
             JOB_ID,
+            ATTEMPT_ID,
             command,
             ReplayJobState.RUNNING,
             Instant.parse("2026-08-02T00:00:00Z"),
@@ -78,6 +81,7 @@ class ReplayControllerTest
                 "Location",
                 "http://localhost/api/v1/replays/" + JOB_ID))
             .andExpect(jsonPath("$.jobId").value(JOB_ID.toString()))
+            .andExpect(jsonPath("$.attemptId").value(ATTEMPT_ID.toString()))
             .andExpect(jsonPath("$.state").value("RUNNING"))
             .andExpect(jsonPath("$.command.recordingId").value(42))
             .andExpect(jsonPath("$.command.expectedReplayDigest").value("123"))
@@ -132,6 +136,7 @@ class ReplayControllerTest
             .withReplayContext(42, 512, 1024, 200);
         final ReplayJobSnapshot snapshot = new ReplayJobSnapshot(
             JOB_ID,
+            ATTEMPT_ID,
             command,
             ReplayJobState.FAILED,
             Instant.parse("2026-08-02T00:00:00Z"),

@@ -30,18 +30,35 @@ public class AeronReplayCoordinator implements ReplayEngine
     private final CheckpointRepository checkpoints;
     private final CompletionProofRepository completionProofs;
     private final ReplayProperties properties;
+    private final MonotonicClock clock;
 
     @Autowired
     public AeronReplayCoordinator(
         final AeronArchiveClientFactory clientFactory,
         final CheckpointRepository checkpoints,
         final CompletionProofRepository completionProofs,
-        final ReplayProperties properties)
+        final ReplayProperties properties,
+        final MonotonicClock clock)
     {
         this.clientFactory = clientFactory;
         this.checkpoints = checkpoints;
         this.completionProofs = completionProofs;
         this.properties = properties;
+        this.clock = clock;
+    }
+
+    public AeronReplayCoordinator(
+        final AeronArchiveClientFactory clientFactory,
+        final CheckpointRepository checkpoints,
+        final CompletionProofRepository completionProofs,
+        final ReplayProperties properties)
+    {
+        this(
+            clientFactory,
+            checkpoints,
+            completionProofs,
+            properties,
+            new SystemMonotonicClock());
     }
 
     public AeronReplayCoordinator(
@@ -53,20 +70,32 @@ public class AeronReplayCoordinator implements ReplayEngine
             clientFactory,
             checkpoints,
             new CompletionProofRepository(properties),
-            properties);
+            properties,
+            new SystemMonotonicClock());
     }
 
     public ReplayResult replay(final ReplayCommand command)
     {
-        return replay(command, ReplayProgressListener.none());
+        return replay(
+            command,
+            ReplayAttempt.standalone(),
+            ReplayProgressListener.none());
+    }
+
+    public ReplayResult replay(
+        final ReplayCommand command,
+        final ReplayProgressListener progressListener)
+    {
+        return replay(command, ReplayAttempt.standalone(), progressListener);
     }
 
     @Override
     public ReplayResult replay(
         final ReplayCommand command,
+        final ReplayAttempt attempt,
         final ReplayProgressListener progressListener)
     {
-        final long startedNs = System.nanoTime();
+        final long startedNs = clock.nanoTime();
         final String clientName = "replay-" + command.checkpointKey();
         try (Aeron aeron = clientFactory.connectAeron(clientName);
             AeronArchive archive = clientFactory.connectArchive(aeron, clientName + "-archive"))
@@ -100,7 +129,9 @@ public class AeronReplayCoordinator implements ReplayEngine
                             0));
             }
 
-            final Checkpoint checkpoint = loadCheckpoint(command, recordingStart);
+            final LoadedCheckpoint loadedCheckpoint =
+                loadCheckpoint(command, recordingStart);
+            final Checkpoint checkpoint = loadedCheckpoint.checkpoint();
             final ProjectionState state = ProjectionState.from(checkpoint);
             try
             {
@@ -138,6 +169,8 @@ public class AeronReplayCoordinator implements ReplayEngine
                         state.lastAppliedEventSequence() &&
                     command.expectedReplayDigest() == state.replayDigest();
                 final ReplayResult result = new ReplayResult(
+                    attempt.jobId(),
+                    attempt.attemptId(),
                     command.recordingId(),
                     command.checkpointKey(),
                     replayStart,
@@ -153,17 +186,21 @@ public class AeronReplayCoordinator implements ReplayEngine
                     state.sequenceGapsThisRun(),
                     state.replayDigest(),
                     command.expectedReplayDigest(),
-                    Duration.ofNanos(System.nanoTime() - startedNs).toMillis(),
+                    Duration.ofNanos(clock.nanoTime() - startedNs).toMillis(),
                     passed);
                 if (passed)
                 {
-                    completionProofs.save(new CompletionProof(
+                    completionProofs.saveIfAbsent(new CompletionProof(
+                        attempt.jobId(),
+                        attempt.attemptId(),
+                        command.correlationId(),
                         command.checkpointKey(),
                         command.recordingId(),
                         replayStart,
                         replayStop,
                         state.lastAppliedEventSequence(),
                         state.replayDigest(),
+                        loadedCheckpoint.resumedFromCheckpoint(),
                         CompletionVerificationStatus.VERIFIED,
                         Instant.now()));
                 }
@@ -180,7 +217,7 @@ public class AeronReplayCoordinator implements ReplayEngine
         }
     }
 
-    private Checkpoint loadCheckpoint(
+    private LoadedCheckpoint loadCheckpoint(
         final ReplayCommand command,
         final long recordingStart)
     {
@@ -201,12 +238,14 @@ public class AeronReplayCoordinator implements ReplayEngine
                                 checkpoint.lastAppliedAeronPosition(),
                                 checkpoint.lastAppliedEventSequence()));
                 }
-                return checkpoint;
+                return new LoadedCheckpoint(checkpoint, true);
             })
-            .orElseGet(() -> Checkpoint.initial(
-                command.checkpointKey(),
-                command.recordingId(),
-                recordingStart));
+            .orElseGet(() -> new LoadedCheckpoint(
+                Checkpoint.initial(
+                    command.checkpointKey(),
+                    command.recordingId(),
+                    recordingStart),
+                false));
     }
 
     private void replayRange(
@@ -290,7 +329,8 @@ public class AeronReplayCoordinator implements ReplayEngine
         final NoProgressWatchdog watchdog = new NoProgressWatchdog(
             properties.getNoProgressTimeout(),
             properties.getMaximumReplayDuration(),
-            state.lastAppliedAeronPosition());
+            state.lastAppliedAeronPosition(),
+            clock);
         while (state.lastAppliedAeronPosition() < replayStop)
         {
             final int fragments = subscription.poll(
@@ -328,5 +368,11 @@ public class AeronReplayCoordinator implements ReplayEngine
                     " is outside replay range=[" + recordingStart +
                     ", " + replayStop + "]"));
         }
+    }
+
+    private record LoadedCheckpoint(
+        Checkpoint checkpoint,
+        boolean resumedFromCheckpoint)
+    {
     }
 }

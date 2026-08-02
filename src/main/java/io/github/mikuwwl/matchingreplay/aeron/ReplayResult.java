@@ -1,6 +1,10 @@
 package io.github.mikuwwl.matchingreplay.aeron;
 
+import java.util.UUID;
+
 public record ReplayResult(
+    UUID jobId,
+    UUID attemptId,
     long recordingId,
     String checkpointKey,
     long replayStartPosition,

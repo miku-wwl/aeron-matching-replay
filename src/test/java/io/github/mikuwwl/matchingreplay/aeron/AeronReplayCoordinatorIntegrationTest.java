@@ -89,7 +89,7 @@ class AeronReplayCoordinatorIntegrationTest
             assertEquals(crashPosition, crashCheckpoint.lastAppliedAeronPosition());
             assertEquals(crashDigest, crashCheckpoint.replayDigest());
             final CompletionProofRepository proofs = new CompletionProofRepository(properties);
-            assertTrue(proofs.find(checkpointKey).isEmpty());
+            assertTrue(proofs.findByCheckpointKey(checkpointKey).isEmpty());
 
             // Fresh client factory, repository and coordinator model a service process restart.
             final AeronReplayCoordinator restartedCoordinator = new AeronReplayCoordinator(
@@ -114,9 +114,14 @@ class AeronReplayCoordinatorIntegrationTest
             assertEquals(0, resumed.duplicatesThisRun());
             assertEquals(uninterrupted.finalReplayDigest(), resumed.finalReplayDigest());
             assertEquals(recording.expectedReplayDigest(), resumed.finalReplayDigest());
-            final CompletionProof proof = proofs.find(checkpointKey).orElseThrow();
+            final CompletionProof proof = proofs
+                .findByAttemptId(checkpointKey, resumed.attemptId())
+                .orElseThrow();
             assertEquals(recording.stopPosition(), proof.replayStopPosition());
             assertEquals(recording.expectedReplayDigest(), proof.finalReplayDigest());
+            assertEquals(resumed.jobId(), proof.jobId());
+            assertEquals(resumed.attemptId(), proof.attemptId());
+            assertTrue(proof.resumedFromCheckpoint());
 
             printDemo(
                 recording,

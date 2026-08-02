@@ -4,13 +4,11 @@ import io.github.mikuwwl.matchingreplay.failure.ReplayException;
 import io.github.mikuwwl.matchingreplay.failure.ReplayFailure;
 
 import java.time.Duration;
-import java.util.function.LongSupplier;
-
 final class NoProgressWatchdog
 {
     private final long noProgressTimeoutNs;
     private final Long maximumReplayDurationNs;
-    private final LongSupplier nanoClock;
+    private final MonotonicClock clock;
     private final long startedNs;
 
     private long lastProgressNs;
@@ -19,16 +17,8 @@ final class NoProgressWatchdog
     NoProgressWatchdog(
         final Duration noProgressTimeout,
         final Duration maximumReplayDuration,
-        final long initialPosition)
-    {
-        this(noProgressTimeout, maximumReplayDuration, initialPosition, System::nanoTime);
-    }
-
-    NoProgressWatchdog(
-        final Duration noProgressTimeout,
-        final Duration maximumReplayDuration,
         final long initialPosition,
-        final LongSupplier nanoClock)
+        final MonotonicClock clock)
     {
         if (noProgressTimeout == null || noProgressTimeout.isZero() ||
             noProgressTimeout.isNegative())
@@ -38,8 +28,8 @@ final class NoProgressWatchdog
         this.noProgressTimeoutNs = noProgressTimeout.toNanos();
         this.maximumReplayDurationNs = maximumReplayDuration == null ?
             null : maximumReplayDuration.toNanos();
-        this.nanoClock = nanoClock;
-        startedNs = nanoClock.getAsLong();
+        this.clock = clock;
+        startedNs = clock.nanoTime();
         lastProgressNs = startedNs;
         lastObservedPosition = initialPosition;
     }
@@ -50,7 +40,7 @@ final class NoProgressWatchdog
         final long replayStopPosition,
         final long lastEventSequence)
     {
-        final long nowNs = nanoClock.getAsLong();
+        final long nowNs = clock.nanoTime();
         if (currentPosition > lastObservedPosition)
         {
             lastObservedPosition = currentPosition;
@@ -76,7 +66,8 @@ final class NoProgressWatchdog
                 currentPosition,
                 replayStopPosition,
                 lastEventSequence,
-                Duration.ofNanos(noProgressNs).toMillis()));
+                Duration.ofNanos(noProgressNs).toMillis(),
+                Duration.ofNanos(noProgressTimeoutNs).toMillis()));
         }
     }
 }

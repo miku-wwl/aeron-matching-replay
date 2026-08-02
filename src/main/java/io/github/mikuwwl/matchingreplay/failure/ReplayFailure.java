@@ -11,11 +11,15 @@ public record ReplayFailure(
     Integer templateId,
     Integer schemaId,
     Integer actingVersion,
+    Integer actingBlockLength,
+    Integer minimumSupportedBlockLength,
+    Long fragmentPosition,
     Long expectedLastEventSequence,
     Long actualLastEventSequence,
     String expectedReplayDigest,
     String actualReplayDigest,
-    Long noProgressMillis)
+    Long timeSinceLastProgressMillis,
+    Long configuredNoProgressTimeoutMillis)
 {
     public ReplayFailure
     {
@@ -32,6 +36,10 @@ public record ReplayFailure(
         return new ReplayFailure(
             code,
             message,
+            null,
+            null,
+            null,
+            null,
             null,
             null,
             null,
@@ -68,6 +76,10 @@ public record ReplayFailure(
             null,
             null,
             null,
+            null,
+            null,
+            null,
+            null,
             null);
     }
 
@@ -76,14 +88,16 @@ public record ReplayFailure(
         final long currentPosition,
         final long replayStopPosition,
         final long lastAppliedEventSequence,
-        final long noProgressMillis)
+        final long timeSinceLastProgressMillis,
+        final long configuredNoProgressTimeoutMillis)
     {
         return new ReplayFailure(
             ReplayFailureCode.NO_PROGRESS_TIMEOUT,
-            "Replay made no progress for " + noProgressMillis +
+            "Replay made no progress for " + timeSinceLastProgressMillis +
                 " ms at position=" + currentPosition +
                 ", stopPosition=" + replayStopPosition +
-                ", lastEventSequence=" + lastAppliedEventSequence,
+                ", lastEventSequence=" + lastAppliedEventSequence +
+                ", configuredTimeout=" + configuredNoProgressTimeoutMillis + " ms",
             recordingId,
             currentPosition,
             replayStopPosition,
@@ -96,7 +110,11 @@ public record ReplayFailure(
             null,
             null,
             null,
-            noProgressMillis);
+            null,
+            null,
+            null,
+            timeSinceLastProgressMillis,
+            configuredNoProgressTimeoutMillis);
     }
 
     public static ReplayFailure maximumReplayDuration(
@@ -123,6 +141,10 @@ public record ReplayFailure(
             null,
             null,
             null,
+            null,
+            null,
+            null,
+            null,
             null);
     }
 
@@ -132,6 +154,25 @@ public record ReplayFailure(
         final Integer templateId,
         final Integer schemaId,
         final Integer actingVersion)
+    {
+        return sbe(
+            code,
+            message,
+            templateId,
+            schemaId,
+            actingVersion,
+            null,
+            null);
+    }
+
+    public static ReplayFailure sbe(
+        final ReplayFailureCode code,
+        final String message,
+        final Integer templateId,
+        final Integer schemaId,
+        final Integer actingVersion,
+        final Integer actingBlockLength,
+        final Integer minimumSupportedBlockLength)
     {
         return new ReplayFailure(
             code,
@@ -144,6 +185,10 @@ public record ReplayFailure(
             templateId,
             schemaId,
             actingVersion,
+            actingBlockLength,
+            minimumSupportedBlockLength,
+            null,
+            null,
             null,
             null,
             null,
@@ -171,10 +216,14 @@ public record ReplayFailure(
             null,
             null,
             null,
+            null,
+            null,
+            null,
             expectedLastEventSequence,
             actualLastEventSequence,
             Long.toUnsignedString(expectedReplayDigest),
             Long.toUnsignedString(actualReplayDigest),
+            null,
             null);
     }
 
@@ -196,10 +245,38 @@ public record ReplayFailure(
             templateId,
             schemaId,
             actingVersion,
+            actingBlockLength,
+            minimumSupportedBlockLength,
+            fragmentPosition,
             expectedLastEventSequence,
             actualLastEventSequence,
             expectedReplayDigest,
             actualReplayDigest,
-            noProgressMillis);
+            timeSinceLastProgressMillis,
+            configuredNoProgressTimeoutMillis);
+    }
+
+    public ReplayFailure withFragmentPosition(final long position)
+    {
+        return new ReplayFailure(
+            code,
+            message,
+            recordingId,
+            currentPosition,
+            replayStopPosition,
+            lastAppliedEventSequence,
+            receivedEventSequence,
+            templateId,
+            schemaId,
+            actingVersion,
+            actingBlockLength,
+            minimumSupportedBlockLength,
+            fragmentPosition == null ? position : fragmentPosition,
+            expectedLastEventSequence,
+            actualLastEventSequence,
+            expectedReplayDigest,
+            actualReplayDigest,
+            timeSinceLastProgressMillis,
+            configuredNoProgressTimeoutMillis);
     }
 }

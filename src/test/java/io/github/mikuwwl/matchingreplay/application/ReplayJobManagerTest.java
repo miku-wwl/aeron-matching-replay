@@ -2,6 +2,7 @@ package io.github.mikuwwl.matchingreplay.application;
 
 import io.github.mikuwwl.matchingreplay.aeron.ReplayCommand;
 import io.github.mikuwwl.matchingreplay.aeron.ReplayEngine;
+import io.github.mikuwwl.matchingreplay.aeron.ReplayAttempt;
 import io.github.mikuwwl.matchingreplay.aeron.ReplayProgress;
 import io.github.mikuwwl.matchingreplay.aeron.ReplayResult;
 import io.github.mikuwwl.matchingreplay.failure.ReplayException;
@@ -30,8 +31,8 @@ class ReplayJobManagerTest
     void completesJobAndKeepsItsResult()
     {
         final ReplayCommand command = command("orders");
-        final ReplayResult result = successfulResult("orders");
-        final ReplayEngine replayEngine = (ignored, listener) -> result;
+        final ReplayEngine replayEngine = (ignored, attempt, listener) ->
+            successfulResult("orders", attempt);
         final ReplayJobManager manager =
             new ReplayJobManager(replayEngine, Runnable::run, CLOCK);
 
@@ -39,6 +40,8 @@ class ReplayJobManagerTest
 
         assertEquals(ReplayJobState.VERIFIED, snapshot.state());
         assertEquals(10, snapshot.result().finalEventSequence());
+        assertEquals(snapshot.jobId(), snapshot.result().jobId());
+        assertEquals(snapshot.attemptId(), snapshot.result().attemptId());
         assertEquals(snapshot, manager.find(snapshot.jobId()).orElseThrow());
     }
 
@@ -57,12 +60,12 @@ class ReplayJobManagerTest
             80,
             1_200,
             Instant.parse("2026-08-02T00:00:01Z"));
-        final ReplayEngine replayEngine = (command, listener) ->
+        final ReplayEngine replayEngine = (command, attempt, listener) ->
         {
             listener.onProgress(progress);
             progressPublished.countDown();
             await(releaseReplay);
-            return successfulResult(command.checkpointKey());
+            return successfulResult(command.checkpointKey(), attempt);
         };
         final TaskExecutor asynchronous =
             task -> Thread.startVirtualThread(task);
@@ -86,7 +89,7 @@ class ReplayJobManagerTest
     @Test
     void rejectsConcurrentUseOfSameCheckpoint()
     {
-        final ReplayEngine replayEngine = (command, listener) -> null;
+        final ReplayEngine replayEngine = (command, attempt, listener) -> null;
         final TaskExecutor queuedExecutor = task -> { };
         final ReplayJobManager manager =
             new ReplayJobManager(replayEngine, queuedExecutor, CLOCK);
@@ -102,14 +105,15 @@ class ReplayJobManagerTest
     @Test
     void mapsExpectedReplayFailureToStableCode()
     {
-        final ReplayEngine replayEngine = (command, listener) ->
+        final ReplayEngine replayEngine = (command, attempt, listener) ->
         {
             throw new ReplayException(ReplayFailure.noProgress(
                 command.recordingId(),
                 64,
                 128,
                 5,
-                1_001));
+                1_001,
+                1_000));
         };
         final ReplayJobManager manager =
             new ReplayJobManager(replayEngine, Runnable::run, CLOCK);
@@ -127,9 +131,13 @@ class ReplayJobManagerTest
         return new ReplayCommand(7, checkpointKey, 128L, 10L, 99L, "test");
     }
 
-    private static ReplayResult successfulResult(final String checkpointKey)
+    private static ReplayResult successfulResult(
+        final String checkpointKey,
+        final ReplayAttempt attempt)
     {
         return new ReplayResult(
+            attempt.jobId(),
+            attempt.attemptId(),
             7,
             checkpointKey,
             0,

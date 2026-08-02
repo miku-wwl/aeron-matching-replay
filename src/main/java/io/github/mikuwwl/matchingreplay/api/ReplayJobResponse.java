@@ -12,6 +12,7 @@ import java.util.UUID;
 
 public record ReplayJobResponse(
     UUID jobId,
+    UUID attemptId,
     ReplayJobState state,
     Command command,
     Instant acceptedAt,
@@ -25,6 +26,7 @@ public record ReplayJobResponse(
     {
         return new ReplayJobResponse(
             snapshot.jobId(),
+            snapshot.attemptId(),
             snapshot.state(),
             Command.from(snapshot.command()),
             snapshot.acceptedAt(),
@@ -84,6 +86,8 @@ public record ReplayJobResponse(
     }
 
     public record Result(
+        UUID jobId,
+        UUID attemptId,
         long recordingId,
         String checkpointKey,
         long replayStartPosition,
@@ -105,6 +109,8 @@ public record ReplayJobResponse(
         static Result from(final ReplayResult result)
         {
             return new Result(
+                result.jobId(),
+                result.attemptId(),
                 result.recordingId(),
                 result.checkpointKey(),
                 result.replayStartPosition(),

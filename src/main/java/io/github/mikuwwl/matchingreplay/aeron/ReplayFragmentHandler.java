@@ -102,6 +102,10 @@ final class ReplayFragmentHandler implements FragmentHandler
                 publishProgress();
             }
         }
+        catch (final ReplayException ex)
+        {
+            failure = ex.withFragmentPosition(header.position());
+        }
         catch (final RuntimeException ex)
         {
             failure = ex;

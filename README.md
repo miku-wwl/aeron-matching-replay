@@ -57,8 +57,9 @@ reading recording files.
   has been decoded and handled. It is never confused with the fragment start.
 - **Crash recovery:** the next process resumes at the last atomically persisted
   Aeron Position. Business `eventSequence` remains a separate value.
-- **Verification:** a completion proof is written only after both the expected
-  final sequence and expected replay digest match.
+- **Verification:** an immutable, attempt-specific completion proof is created
+  only after both the expected final sequence and expected replay digest match.
+  A later replay using the same checkpoint key cannot overwrite it.
 
 ## One-command demonstration
 
@@ -120,6 +121,8 @@ The request returns `202 Accepted`. Poll
 Position, throughput, and `lastProgressAt`. Terminal state is `VERIFIED`,
 `VERIFICATION_FAILED`, or `FAILED`; failures include a stable code and
 diagnostic fields rather than requiring message parsing.
+Each job also exposes a distinct `attemptId`; these two IDs identify its
+immutable completion proof.
 
 Counter names are explicit:
 
@@ -134,12 +137,14 @@ See [API reference](docs/api.md) for complete request and response examples.
 | Scenario | Invariant proved |
 |---|---|
 | Bounded replay | Appended events beyond the captured stop Position are excluded |
+| Live bounded replay | Recording remains live while events after the captured boundary are ignored |
 | Duplicate sequence | Position advances; digest and applied count do not |
 | Sequence gap | Fails with `SEQUENCE_GAP`; checkpoint remains at the last good event |
-| Invalid/future SBE | Fails with a structured codec code and does not advance checkpoint |
+| Invalid/future SBE | Validates schema, template, version, and acting block length before application |
 | Verification mismatch | Progress remains valid but no completion proof is created or overwritten |
+| Repeated/no-op verification | Every successful attempt gets a separate immutable proof |
 | Hard process crash | Fresh process resumes at saved Position and matches uninterrupted digest |
-| No progress | Healthy long replay can exceed the timeout interval; a stalled replay fails |
+| No progress | Full Coordinator/job flow returns structured timeout and preserves its last checkpoint |
 | Schema evolution | Current decoder reads v1 and v2, and rejects unsupported future versions |
 
 ## Replay digest
@@ -168,8 +173,17 @@ production architecture.
 ## Build and test
 
 ```powershell
+git clone https://github.com/miku-wwl/aeron-matching-replay.git
+Set-Location aeron-matching-replay
+.\mvnw.cmd --version
+```
+
+```powershell
 .\mvnw.cmd -ntp clean verify
 ```
+
+The Maven Wrapper downloads Maven 3.9.9 from Maven Central; no regional mirror
+configuration is required.
 
 `generate-sources` runs the official SBE tool against
 `src/main/resources/sbe/matching-events.xml`; generated Java is written only to
@@ -183,13 +197,15 @@ pushes to `main` and pull requests.
 ## Operations and observability
 
 Progress checkpoints live in `runtime/checkpoints`; verified completion proofs
-are separate files in `runtime/checkpoints/completion-proofs`. The checkpoint
+are immutable files under
+`runtime/checkpoints/completion-proofs/{checkpointKey}/{attemptId}.properties`.
+The checkpoint
 cadence counts all successfully processed messages, including duplicates,
 because their consumed Aeron Position must be recoverable.
 
 Actuator exposes replay-focused Micrometer metrics at `/actuator/metrics`.
-Lifecycle logs carry MDC `jobId`, `correlationId`, and `recordingId` and avoid
-per-event logging. See:
+Lifecycle logs carry MDC `jobId`, `attemptId`, `correlationId`, and
+`recordingId` and avoid per-event logging. See:
 
 - [Architecture](docs/architecture.md)
 - [Operations](docs/operations.md)

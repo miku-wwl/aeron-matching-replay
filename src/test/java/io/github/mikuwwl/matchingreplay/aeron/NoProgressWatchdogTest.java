@@ -55,6 +55,7 @@ class NoProgressWatchdogTest
         assertEquals(64, exception.failure().currentPosition());
         assertEquals(1_024, exception.failure().replayStopPosition());
         assertEquals(400, exception.failure().lastAppliedEventSequence());
-        assertEquals(101, exception.failure().noProgressMillis());
+        assertEquals(101, exception.failure().timeSinceLastProgressMillis());
+        assertEquals(100, exception.failure().configuredNoProgressTimeoutMillis());
     }
 }

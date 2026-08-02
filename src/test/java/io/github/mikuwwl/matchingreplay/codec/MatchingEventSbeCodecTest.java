@@ -3,6 +3,7 @@ package io.github.mikuwwl.matchingreplay.codec;
 import io.github.mikuwwl.matchingreplay.codec.generated.MessageHeaderDecoder;
 import io.github.mikuwwl.matchingreplay.codec.generated.MessageHeaderEncoder;
 import io.github.mikuwwl.matchingreplay.codec.generated.OrderAcceptedEncoder;
+import io.github.mikuwwl.matchingreplay.codec.generated.OrderAcceptedDecoder;
 import io.github.mikuwwl.matchingreplay.domain.EventType;
 import io.github.mikuwwl.matchingreplay.domain.MatchingEvent;
 import io.github.mikuwwl.matchingreplay.domain.Side;
@@ -133,7 +134,7 @@ class MatchingEventSbeCodecTest
             UnknownTemplateException.class,
             () -> dispatcher.decode(buffer, 0, length));
         assertEquals(
-            ReplayFailureCode.UNSUPPORTED_SCHEMA,
+            ReplayFailureCode.UNSUPPORTED_TEMPLATE,
             unknownTemplate.failure().code());
 
         assertThrows(
@@ -148,6 +149,46 @@ class MatchingEventSbeCodecTest
                 buffer,
                 0,
                 MessageHeaderDecoder.ENCODED_LENGTH + 1));
+    }
+
+    @Test
+    void actingBlockLengthBelowV1MinimumFails()
+    {
+        final int length = encoder.encode(
+            event((short)1, EventType.ORDER_ACCEPTED, 1, 0, 0, 10, 0),
+            buffer,
+            0);
+        final int minimum = OrderAcceptedDecoder.sourceIdEncodingOffset();
+        new MessageHeaderEncoder().wrap(buffer, 0).blockLength(minimum - 1);
+
+        final CodecException exception = assertThrows(
+            CodecException.class,
+            () -> dispatcher.decode(buffer, 0, length));
+
+        assertEquals(ReplayFailureCode.SBE_DECODE_FAILED, exception.failure().code());
+        assertEquals(1, exception.failure().actingVersion());
+        assertEquals(minimum - 1, exception.failure().actingBlockLength());
+        assertEquals(minimum, exception.failure().minimumSupportedBlockLength());
+    }
+
+    @Test
+    void actingBlockLengthBelowV2MinimumFails()
+    {
+        final int length = encoder.encode(
+            event((short)2, EventType.ORDER_ACCEPTED, 1, 0, 0, 10, 1),
+            buffer,
+            0);
+        final int minimum = OrderAcceptedDecoder.BLOCK_LENGTH;
+        new MessageHeaderEncoder().wrap(buffer, 0).blockLength(minimum - 1);
+
+        final CodecException exception = assertThrows(
+            CodecException.class,
+            () -> dispatcher.decode(buffer, 0, length));
+
+        assertEquals(ReplayFailureCode.SBE_DECODE_FAILED, exception.failure().code());
+        assertEquals(2, exception.failure().actingVersion());
+        assertEquals(minimum - 1, exception.failure().actingBlockLength());
+        assertEquals(minimum, exception.failure().minimumSupportedBlockLength());
     }
 
     @Test

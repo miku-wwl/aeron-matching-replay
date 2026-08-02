@@ -10,7 +10,7 @@ public final class UnknownTemplateException extends CodecException
         final int actingVersion)
     {
         super(
-            ReplayFailureCode.UNSUPPORTED_SCHEMA,
+            ReplayFailureCode.UNSUPPORTED_TEMPLATE,
             "Unknown SBE templateId=" + templateId +
                 ", schemaId=" + schemaId +
                 ", actingVersion=" + actingVersion,

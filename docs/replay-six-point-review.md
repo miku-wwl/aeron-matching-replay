@@ -18,13 +18,25 @@ Aeron Archive 集成测试、Checkpoint/Completion Proof、API 与运维文档�
 最终验证命令：
 
 ```powershell
+.\mvnw.cmd --version
 .\mvnw.cmd -ntp clean verify
 .\scripts\demo-replay.ps1
 ```
 
 测试覆盖真实 `ArchivingMediaDriver`、Archive Recording/Replay、bounded
-replay、duplicate、gap、无效/未来 SBE、verification mismatch、无进展超时，
-以及子 JVM `Runtime.halt(77)` 后恢复。
+live recording replay、duplicate、gap、无效/未来/短 block SBE、immutable
+attempt proof、verification mismatch、Coordinator 级无进展超时，以及子 JVM
+`Runtime.halt(77)` 后恢复。
+
+Final Enhancement 同时确认：
+
+- Maven Wrapper 3.9.9 从 Maven Central 下载，不依赖区域镜像；
+- 每个 job 生成独立 `attemptId`；
+- Proof 路径为
+  `completion-proofs/{checkpointKey}/{attemptId}.properties`，不可覆盖；
+- 已知 schema 的未知 template 使用 `UNSUPPORTED_TEMPLATE`；
+- 不存在 Checkpoint 时从 recording start 开始，因此已移除误导性的
+  `CHECKPOINT_NOT_FOUND`。
 
 ## 1. SBE 确实由 Maven generate-sources 生成
 
@@ -44,6 +56,8 @@ replay、duplicate、gap、无效/未来 SBE、verification mismatch、无进展
   `target` 可安全删除，decode/encode 类会在下一次 Maven 构建生成。
 - 当前 v2 decoder 能读取 v1（新增 `sourceId` 缺省为 0）和 v2，未来 acting
   version 返回结构化 `UNSUPPORTED_SCHEMA`。
+- Decoder 在 wrap 前按 template/version 的生成常量验证 `actingBlockLength`；
+  过短 block 返回 `SBE_DECODE_FAILED`，并携带实际/最小长度和 fragment Position。
 
 相关测试：
 
@@ -51,6 +65,8 @@ replay、duplicate、gap、无效/未来 SBE、verification mismatch、无进展
 v2DecoderReplaysV1Recording
 v2DecoderReplaysV2Recording
 futureSchemaVersionFailsClearly
+actingBlockLengthBelowV1MinimumFails
+actingBlockLengthBelowV2MinimumFails
 ```
 
 ## 2. Replay 确实调用 Aeron Archive API
@@ -69,8 +85,9 @@ futureSchemaVersionFailsClearly
   Coordinator 回放。
 - 生产 JAR 不启动内置 Archive；嵌入式 Archive 只在测试/一键演示中存在。
 
-`boundedReplayStopsAtCapturedPosition` 还证明 stop Position 被一次性捕获，边界后
-追加的消息不会被本次 replay 消费。
+`boundedReplayDoesNotFollowEventsAppendedAfterCapturedStopPosition` 在 recording
+仍为 live 的情况下先发布 1..5、捕获 Position、再发布 6..10，证明 replay 只处理
+1..5，进度到 100%，Proof 也保存原边界。
 
 ## 3. Checkpoint 保存的是完整处理后的 Header.position()
 
@@ -174,11 +191,21 @@ timestamp、schema version、v2 `sourceId`、Aeron transport metadata 不参与�
 Progress Checkpoint 与 Completion Proof 已分离：
 
 - Checkpoint 表示“截至某个 Aeron Position 已完整处理”，用于崩溃恢复；
-- Completion Proof 表示“有界 replay 到达终点且 sequence/digest 均通过校验”；
-- mismatch 保留合法进度，但不创建或覆盖已存在 Proof。
+- Completion Proof 表示一次具体 attempt 的有界 replay 已到达终点且
+  sequence/digest 均通过校验；
+- Proof 包含 `jobId`、`attemptId`、`correlationId`、range、
+  `resumedFromCheckpoint`、sequence/digest 和完成时间；
+- 强制落盘的临时 inode 通过原子 hard link 创建最终文件；目标存在则明确失败；
+- 同一 checkpoint 的第二次成功/no-op replay 创建新文件，不覆盖第一次证据；
+- mismatch 保留合法进度，但不创建 Proof。
 
-`verificationMismatchDoesNotCreateOrOverwriteCompletionProof` 对此做了真实 Archive
-集成验证。
+`existingCompletionProofIsImmutable`、`noOpReplayCreatesSeparateProof` 和
+`verificationMismatchDoesNotCreateOrOverwriteCompletionProof` 对此做了验证。
+
+Coordinator 级 `stalledReplayReturnsNoProgressTimeout` 使用注入的 monotonic clock，
+先成功处理一条消息再停止 Position 推进，验证 job=`FAILED`、
+code=`NO_PROGRESS_TIMEOUT`、Checkpoint 停在最后成功 Position、Proof 缺失，并返回
+实际无进展时长和配置 timeout。
 
 ## Archive 耐久性工程取舍
 

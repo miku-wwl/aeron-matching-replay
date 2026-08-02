@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.Properties;
+import java.util.UUID;
 
 final class AtomicPropertiesFile
 {
@@ -72,6 +73,61 @@ final class AtomicPropertiesFile
         catch (final IOException ex)
         {
             throw new IllegalStateException("Failed to read checkpoint " + path, ex);
+        }
+    }
+
+    static void writeNew(
+        final Path target,
+        final Properties properties,
+        final String comment)
+    {
+        final Path normalized = target.toAbsolutePath().normalize();
+        Path temporary = null;
+        try
+        {
+            Files.createDirectories(normalized.getParent());
+            final ByteArrayOutputStream output = new ByteArrayOutputStream();
+            properties.store(output, comment);
+            final ByteBuffer bytes = ByteBuffer.wrap(output.toByteArray());
+            temporary = normalized.resolveSibling(
+                normalized.getFileName() + ".tmp-" + UUID.randomUUID());
+            try (FileChannel channel = FileChannel.open(
+                temporary,
+                StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.WRITE))
+            {
+                while (bytes.hasRemaining())
+                {
+                    channel.write(bytes);
+                }
+                channel.force(true);
+            }
+
+            // A hard link atomically exposes the already-forced inode and, unlike
+            // ATOMIC_MOVE, is specified to fail when the immutable target exists.
+            Files.createLink(normalized, temporary);
+            Files.delete(temporary);
+            temporary = null;
+        }
+        catch (final IOException | UnsupportedOperationException ex)
+        {
+            throw new IllegalStateException(
+                "Failed to atomically create immutable file " + normalized,
+                ex);
+        }
+        finally
+        {
+            if (temporary != null)
+            {
+                try
+                {
+                    Files.deleteIfExists(temporary);
+                }
+                catch (final IOException ignored)
+                {
+                    // The original creation failure remains the actionable error.
+                }
+            }
         }
     }
 

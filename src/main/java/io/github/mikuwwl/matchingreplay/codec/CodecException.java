@@ -32,6 +32,25 @@ public class CodecException extends ReplayException
         final Integer templateId,
         final Integer schemaId,
         final Integer actingVersion,
+        final Integer actingBlockLength,
+        final Integer minimumSupportedBlockLength)
+    {
+        super(ReplayFailure.sbe(
+            code,
+            message,
+            templateId,
+            schemaId,
+            actingVersion,
+            actingBlockLength,
+            minimumSupportedBlockLength));
+    }
+
+    public CodecException(
+        final ReplayFailureCode code,
+        final String message,
+        final Integer templateId,
+        final Integer schemaId,
+        final Integer actingVersion,
         final Throwable cause)
     {
         super(

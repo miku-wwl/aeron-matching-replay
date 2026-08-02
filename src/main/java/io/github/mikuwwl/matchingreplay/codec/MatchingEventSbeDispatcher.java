@@ -64,10 +64,39 @@ public final class MatchingEventSbeDispatcher
         }
 
         final int actingBlockLength = headerDecoder.blockLength();
+        if (!isSupportedTemplate(templateId))
+        {
+            throw new UnknownTemplateException(templateId, schemaId, actingVersion);
+        }
+        final int minimumBlockLength =
+            minimumBlockLength(templateId, actingVersion);
+        if (actingBlockLength < minimumBlockLength)
+        {
+            throw new CodecException(
+                ReplayFailureCode.SBE_DECODE_FAILED,
+                "SBE actingBlockLength=" + actingBlockLength +
+                    " is smaller than minimumSupportedBlockLength=" +
+                    minimumBlockLength +
+                    ", templateId=" + templateId +
+                    ", schemaId=" + schemaId +
+                    ", actingVersion=" + actingVersion,
+                templateId,
+                schemaId,
+                actingVersion,
+                actingBlockLength,
+                minimumBlockLength);
+        }
         if (length < MessageHeaderDecoder.ENCODED_LENGTH + actingBlockLength)
         {
             throw new CodecException(
-                "Short SBE message body: length=" + length + ", actingBlockLength=" + actingBlockLength);
+                ReplayFailureCode.SBE_DECODE_FAILED,
+                "Short SBE message body: length=" + length +
+                    ", actingBlockLength=" + actingBlockLength,
+                templateId,
+                schemaId,
+                actingVersion,
+                actingBlockLength,
+                minimumBlockLength);
         }
 
         final int bodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
@@ -81,10 +110,8 @@ public final class MatchingEventSbeDispatcher
                     decodeMatched(buffer, bodyOffset, actingBlockLength, actingVersion);
                 case TradeCreatedDecoder.TEMPLATE_ID ->
                     decodeTrade(buffer, bodyOffset, actingBlockLength, actingVersion);
-                default -> throw new UnknownTemplateException(
-                    templateId,
-                    schemaId,
-                    actingVersion);
+                default -> throw new IllegalStateException(
+                    "Template validation and dispatch are inconsistent");
             };
         }
         catch (final CodecException ex)
@@ -103,6 +130,34 @@ public final class MatchingEventSbeDispatcher
                 actingVersion,
                 ex);
         }
+    }
+
+    private static boolean isSupportedTemplate(final int templateId)
+    {
+        return templateId == OrderAcceptedDecoder.TEMPLATE_ID ||
+            templateId == OrderMatchedDecoder.TEMPLATE_ID ||
+            templateId == TradeCreatedDecoder.TEMPLATE_ID;
+    }
+
+    private static int minimumBlockLength(
+        final int templateId,
+        final int actingVersion)
+    {
+        final boolean versionOne = actingVersion == MINIMUM_SCHEMA_VERSION;
+        return switch (templateId)
+        {
+            case OrderAcceptedDecoder.TEMPLATE_ID -> versionOne ?
+                OrderAcceptedDecoder.sourceIdEncodingOffset() :
+                OrderAcceptedDecoder.BLOCK_LENGTH;
+            case OrderMatchedDecoder.TEMPLATE_ID -> versionOne ?
+                OrderMatchedDecoder.sourceIdEncodingOffset() :
+                OrderMatchedDecoder.BLOCK_LENGTH;
+            case TradeCreatedDecoder.TEMPLATE_ID -> versionOne ?
+                TradeCreatedDecoder.sourceIdEncodingOffset() :
+                TradeCreatedDecoder.BLOCK_LENGTH;
+            default -> throw new IllegalArgumentException(
+                "Unsupported templateId=" + templateId);
+        };
     }
 
     private MatchingEvent decodeAccepted(
