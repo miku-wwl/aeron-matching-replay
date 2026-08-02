@@ -47,8 +47,8 @@ Fields:
 | `recordingId` | yes | Exact Aeron Archive recording |
 | `checkpointKey` | no | Durable state key; defaults to `default` |
 | `stopPosition` | no | Exclusive Aeron end Position for the bounded replay; defaults to the available position captured at job start |
-| `expectedLastEventSequence` | no | Expected business sequence at completion |
-| `expectedStateHash` | no | Expected unsigned 64-bit hash, encoded as a decimal string |
+| `expectedLastEventSequence` | yes | Expected business sequence at completion; cannot be omitted |
+| `expectedStateHash` | yes | Expected unsigned 64-bit hash as a decimal string; cannot be omitted |
 | `correlationId` | no | Caller trace or incident identifier |
 
 `checkpointKey` must match `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`.
@@ -61,9 +61,9 @@ GET /api/v1/replays/{jobId}
 
 Terminal job states:
 
-- `SUCCEEDED`: replay completed and all supplied expectations matched.
-- `VERIFICATION_FAILED`: replay completed, but a supplied sequence or hash did
-  not match.
+- `SUCCEEDED`: replay completed and both mandatory expectations matched.
+- `VERIFICATION_FAILED`: replay completed, but the sequence or hash did not
+  match.
 - `FAILED`: Archive access, decoding, gap detection, timeout, or persistence
   failed.
 

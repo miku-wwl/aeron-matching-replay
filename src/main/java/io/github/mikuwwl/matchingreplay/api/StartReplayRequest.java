@@ -10,21 +10,20 @@ public record StartReplayRequest(
     @NotNull @PositiveOrZero Long recordingId,
     @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9._-]{0,127}") String checkpointKey,
     @PositiveOrZero Long stopPosition,
-    @PositiveOrZero Long expectedLastEventSequence,
-    @Pattern(regexp = "[0-9]{1,20}") String expectedStateHash,
+    @NotNull @PositiveOrZero Long expectedLastEventSequence,
+    @NotNull @Pattern(regexp = "[0-9]{1,20}") String expectedStateHash,
     @Size(max = 128) String correlationId)
 {
     public ReplayCommand toCommand()
     {
         final String effectiveCheckpointKey =
             checkpointKey == null || checkpointKey.isBlank() ? "default" : checkpointKey;
-        final Long parsedStateHash = expectedStateHash == null ?
-            null : Long.parseUnsignedLong(expectedStateHash);
+        final long parsedStateHash = Long.parseUnsignedLong(expectedStateHash);
         return new ReplayCommand(
             recordingId.longValue(),
             effectiveCheckpointKey,
             stopPosition,
-            expectedLastEventSequence,
+            expectedLastEventSequence.longValue(),
             parsedStateHash,
             correlationId);
     }

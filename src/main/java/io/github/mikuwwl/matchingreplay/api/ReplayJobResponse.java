@@ -35,7 +35,7 @@ public record ReplayJobResponse(
         long recordingId,
         String checkpointKey,
         Long stopPosition,
-        Long expectedLastEventSequence,
+        long expectedLastEventSequence,
         String expectedStateHash,
         String correlationId)
     {
@@ -46,8 +46,7 @@ public record ReplayJobResponse(
                 command.checkpointKey(),
                 command.stopPosition(),
                 command.expectedLastEventSequence(),
-                command.expectedStateHash() == null ?
-                    null : Long.toUnsignedString(command.expectedStateHash()),
+                Long.toUnsignedString(command.expectedStateHash()),
                 command.correlationId());
         }
     }

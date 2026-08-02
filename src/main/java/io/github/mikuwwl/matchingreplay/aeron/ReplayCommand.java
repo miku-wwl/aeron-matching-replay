@@ -4,8 +4,8 @@ public record ReplayCommand(
     long recordingId,
     String checkpointKey,
     Long stopPosition,
-    Long expectedLastEventSequence,
-    Long expectedStateHash,
+    long expectedLastEventSequence,
+    long expectedStateHash,
     String correlationId)
 {
     public ReplayCommand
@@ -18,7 +18,7 @@ public record ReplayCommand(
         {
             throw new IllegalArgumentException("stopPosition must not be negative");
         }
-        if (expectedLastEventSequence != null && expectedLastEventSequence < 0)
+        if (expectedLastEventSequence < 0)
         {
             throw new IllegalArgumentException("expectedLastEventSequence must not be negative");
         }

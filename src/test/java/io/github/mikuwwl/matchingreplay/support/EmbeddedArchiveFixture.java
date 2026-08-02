@@ -24,6 +24,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 
 public final class EmbeddedArchiveFixture implements AutoCloseable
@@ -101,6 +102,8 @@ public final class EmbeddedArchiveFixture implements AutoCloseable
                 final long recordingId = RecordingPos.getRecordingId(aeron.countersReader(), counterId);
                 final MatchingEventSbeEncoder encoder = new MatchingEventSbeEncoder();
                 final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(512));
+                final List<Long> eventEndPositions = new ArrayList<>(events.size());
+                final List<Long> stateHashes = new ArrayList<>(events.size());
                 long finalPosition = 0;
                 long expectedHash = Hashing.FNV_OFFSET_BASIS;
                 for (final MatchingEvent event : events)
@@ -108,13 +111,21 @@ public final class EmbeddedArchiveFixture implements AutoCloseable
                     final int length = encoder.encode(event, buffer, 0);
                     finalPosition = offer(publication, buffer, length, event.eventSequence());
                     expectedHash = Hashing.mixEvent(expectedHash, event);
+                    eventEndPositions.add(finalPosition);
+                    stateHashes.add(expectedHash);
                 }
                 final long requiredPosition = finalPosition;
                 await(
                     () -> aeron.countersReader().getCounterValue(counterId) >= requiredPosition,
                     "Archive recording position");
                 archive.stopRecording(recordingSubscriptionId);
-                return new Recording(recordingId, finalPosition, events.size(), expectedHash);
+                return new Recording(
+                    recordingId,
+                    finalPosition,
+                    events.size(),
+                    expectedHash,
+                    eventEndPositions,
+                    stateHashes);
             }
             finally
             {
@@ -226,8 +237,39 @@ public final class EmbeddedArchiveFixture implements AutoCloseable
         long recordingId,
         long stopPosition,
         long eventCount,
-        long expectedStateHash)
+        long expectedStateHash,
+        List<Long> eventEndPositions,
+        List<Long> stateHashes)
     {
+        public Recording
+        {
+            eventEndPositions = List.copyOf(eventEndPositions);
+            stateHashes = List.copyOf(stateHashes);
+            if (eventEndPositions.size() != eventCount || stateHashes.size() != eventCount)
+            {
+                throw new IllegalArgumentException("Every event must have a position and state hash");
+            }
+        }
+
+        public long positionAfterSequence(final long eventSequence)
+        {
+            return eventEndPositions.get(indexOf(eventSequence));
+        }
+
+        public long hashAfterSequence(final long eventSequence)
+        {
+            return stateHashes.get(indexOf(eventSequence));
+        }
+
+        private int indexOf(final long eventSequence)
+        {
+            if (eventSequence < 1 || eventSequence > eventCount)
+            {
+                throw new IllegalArgumentException(
+                    "eventSequence must be within [1, " + eventCount + "]");
+            }
+            return Math.toIntExact(eventSequence - 1);
+        }
     }
 
     @FunctionalInterface

@@ -1,5 +1,12 @@
 # Matching Engine → Aeron Archive → Replay 最小复现工程指导
 
+> **历史文档提示**：本文件保存的是最初的“多进程、内置最小 OrderBook”MVP 指南，
+> 已被当前的单服务 Spring Boot 架构取代。当前生产代码不包含 OrderBook，OrderBook
+> 仅用于当时生成确定性演示事件，不能表述为作者在 OKX 的职责范围。关于 Publication
+> 接受、Archive recordingPosition、设备持久化和复制/集群提交之间的区别，以
+> [当前架构文档](../architecture.md#archive-durability-boundary)和
+> [六项 Review 报告](../replay-six-point-review.md)为准。
+
 > **用途**：将本文件直接交给 Codex / GPT-5.6 Sol Extra High，按阶段完成一个可运行、可测试、可演示的 Maven 多模块 Java 项目。  
 > **项目定位**：复现“撮合引擎产生事件 → Aeron 传输 → Aeron Archive 持久化 → Consumer 中断 → 按 Position Replay 恢复”这一段。  
 > **明确不复现**：撮合前端、订单网关、用户鉴权、充值提现、账户清算、风控中心、完整交易所微服务。  

@@ -90,9 +90,63 @@ not chase a live recording forever.
 4. `eventSequence == last + 1` applies a business effect.
 5. `eventSequence <= last` is an idempotently suppressed duplicate.
 6. `eventSequence > last + 1` fails immediately as a gap.
-7. The checkpoint is atomically replaced only after application.
-8. Supplied final sequence and unsigned state hash must match for a
+7. The checkpoint is atomically replaced only after application; filesystems
+   without atomic move support fail the checkpoint write.
+8. The mandatory final sequence and unsigned state hash must both match for a
    `SUCCEEDED` result.
+
+## Position and checkpoint semantics
+
+`ReplayFragmentHandler` decodes a completed Aeron message, applies or
+idempotently suppresses its business event, and only then passes
+`Header.position()` into `ProjectionState`. The saved value is therefore the
+end Position of the fully processed message, not the fragment's starting
+offset. A restart asks Archive to replay from that saved end Position, so the
+next message is the first not represented by the checkpoint.
+
+`eventSequence` and Aeron Position are deliberately separate fields:
+
+| Value | Meaning | Used for |
+|---|---|---|
+| `eventSequence` | Business ordering identity | Gap detection and idempotency |
+| `lastAppliedAeronPosition` | Archive byte-stream progress | Replay start Position |
+
+The checkpoint writer forces the temporary file contents and requires a
+same-filesystem atomic move to replace the prior file. It fails rather than
+silently performing a non-atomic replacement. This protects the service's
+process-crash recovery invariant on supported filesystems. It does not claim
+that the parent-directory entry was forced, that a storage device completed a
+power-loss-safe flush, or that the checkpoint was replicated.
+
+When replacing the in-memory sample `ProjectionState` with an external
+database or service, the business effect, deduplication record, and checkpoint
+must be made one atomic recovery unit (for example with a transaction or
+Inbox). An atomic checkpoint file alone cannot make an unrelated external side
+effect atomic.
+
+## Archive durability boundary
+
+Four different observations must not be collapsed into one:
+
+1. `publication.offer(...) > 0`: the Publication accepted the message and
+   returned a stream Position.
+2. `recordingPosition >= publishedPosition`: Archive reports recording progress
+   through that Position, making it an appropriate available replay bound.
+3. Device-durable: the relevant files and metadata have completed the storage
+   guarantees required to survive the selected failure model.
+4. Replicated or cluster-committed: another durability policy has acknowledged
+   the event.
+
+The service uses the active `recordingPosition` (or stopped
+`stopPosition`) to bound bytes available from Archive. It does not turn that
+counter into an `fsync`, replication, or cluster-commit claim. The integration
+fixture waits for the counter to reach the publisher's final Position only to
+make the test deterministic.
+
+This repository makes no claim about the exact OKX production strategy.
+Depending on a system's requirements, production designs may use asynchronous
+recording, Archive replication, Aeron Cluster log semantics, another journal,
+or a combination of them.
 
 ## Extension seam
 

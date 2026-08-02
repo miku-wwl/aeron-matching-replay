@@ -8,7 +8,9 @@
 
 The build generates Java SBE codecs under
 `target/generated-sources/sbe`, executes unit/API tests, boots the Spring
-context, and runs a real `ArchivingMediaDriver` integration test.
+context, and runs a real `ArchivingMediaDriver` integration test. That test
+also terminates a child replay JVM with `Runtime.halt(77)` and verifies recovery
+against an uninterrupted replay.
 
 ## Package and run
 
@@ -62,8 +64,15 @@ maintenance window is in progress.
 
 ## Checkpoint handling
 
-Checkpoint files are the durable service state. Back them up with the same care
-as the upstream recording metadata. Do not edit them manually.
+Checkpoint files are the service's persistent recovery state. Back them up with
+the same care as the upstream recording metadata. Do not edit them manually.
+
+Each write forces a temporary file and requires atomic replacement on the same
+filesystem. If atomic move is unsupported, the job fails instead of degrading
+to a non-atomic overwrite. The implementation does not force the parent
+directory and does not promise survival of every storage-controller or
+power-loss failure; select and validate the filesystem/storage policy against
+the deployment's failure model.
 
 To deliberately reset local development checkpoints:
 
@@ -73,6 +82,25 @@ To deliberately reset local development checkpoints:
 
 Resetting a checkpoint causes the next job for that key to replay from the
 recording start and expect the first business sequence to be 1.
+
+## Publication, recording, and durability
+
+These operational milestones are distinct:
+
+| Milestone | What it proves | What it does not prove |
+|---|---|---|
+| Publication accepts an offer | Aeron assigned a stream Position | Archive has recorded it |
+| Archive counter reaches the Position | The Position is reported recorded/available | Device `fsync`, replication, or cluster commit |
+| Storage durability policy acknowledges | The configured device failure model is covered | A remote replica committed |
+| Replication/cluster policy acknowledges | The configured replicated failure model is covered | Any stronger policy not explicitly configured |
+
+The service reads `recordingPosition` for an active Recording and
+`stopPosition` for a stopped Recording. The integration fixture waits until the
+counter catches the final Publication Position solely to prevent a race in the
+test. This wait is an MVP/test trade-off, not a statement that OKX production
+does the same. Production systems may choose asynchronous recording,
+replication, Aeron Cluster, or another journal according to their own latency
+and loss budget.
 
 ## Failure behavior
 

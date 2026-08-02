@@ -108,6 +108,22 @@ class ReplayControllerTest
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
                     {
+                      "checkpointKey": "orders",
+                      "expectedLastEventSequence": 300,
+                      "expectedStateHash": "123"
+                    }
+                    """))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void requiresExpectedSequenceAndStateHash() throws Exception
+    {
+        mockMvc.perform(post("/api/v1/replays")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {
+                      "recordingId": 42,
                       "checkpointKey": "orders"
                     }
                     """))

@@ -77,8 +77,8 @@ public class AeronReplayCoordinator
             final boolean passed =
                 state.lastAppliedAeronPosition() >= replayStop &&
                 state.gapCount() == 0 &&
-                matches(command.expectedLastEventSequence(), state.lastAppliedEventSequence()) &&
-                matches(command.expectedStateHash(), state.stateHash());
+                command.expectedLastEventSequence() == state.lastAppliedEventSequence() &&
+                command.expectedStateHash() == state.stateHash();
             return new ReplayResult(
                 command.recordingId(),
                 command.checkpointKey(),
@@ -195,8 +195,4 @@ public class AeronReplayCoordinator
         }
     }
 
-    private static boolean matches(final Long expected, final long actual)
-    {
-        return expected == null || expected == actual;
-    }
 }

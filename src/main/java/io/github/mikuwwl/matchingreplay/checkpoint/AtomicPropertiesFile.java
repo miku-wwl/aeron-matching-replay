@@ -48,9 +48,11 @@ final class AtomicPropertiesFile
                     StandardCopyOption.ATOMIC_MOVE,
                     StandardCopyOption.REPLACE_EXISTING);
             }
-            catch (final AtomicMoveNotSupportedException ignored)
+            catch (final AtomicMoveNotSupportedException ex)
             {
-                Files.move(temporary, normalized, StandardCopyOption.REPLACE_EXISTING);
+                throw new IllegalStateException(
+                    "Atomic move is required for checkpoint replacement: " + normalized,
+                    ex);
             }
         }
         catch (final IOException ex)

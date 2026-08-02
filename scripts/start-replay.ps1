@@ -7,8 +7,12 @@ param(
 
     [Nullable[long]]$StopPosition,
 
-    [Nullable[long]]$ExpectedLastEventSequence,
+    [Parameter(Mandatory)]
+    [ValidateRange(0, [long]::MaxValue)]
+    [long]$ExpectedLastEventSequence,
 
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9]{1,20}$')]
     [string]$ExpectedStateHash,
 
     [string]$CorrelationId,
@@ -20,16 +24,12 @@ $ErrorActionPreference = "Stop"
 $body = @{
     recordingId = $RecordingId
     checkpointKey = $CheckpointKey
+    expectedLastEventSequence = $ExpectedLastEventSequence
+    expectedStateHash = $ExpectedStateHash
 }
 
 if ($null -ne $StopPosition) {
     $body.stopPosition = $StopPosition.Value
-}
-if ($null -ne $ExpectedLastEventSequence) {
-    $body.expectedLastEventSequence = $ExpectedLastEventSequence.Value
-}
-if ($ExpectedStateHash) {
-    $body.expectedStateHash = $ExpectedStateHash
 }
 if ($CorrelationId) {
     $body.correlationId = $CorrelationId

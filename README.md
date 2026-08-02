@@ -1,48 +1,54 @@
 # Aeron Archive Replay Service
 
-这是一个单体 Spring Boot 回放服务。它只负责协调和执行 Replay，不再把撮合引擎、
-事件生产方、Media Driver、Aeron Archive 和 Consumer 拆成仓库里的多个应用。
+This repository contains a single-deployment Spring Boot replay service. It
+coordinates and executes replay jobs without embedding the matching engine,
+event producer, Media Driver, Aeron Archive, or consumer as separate
+applications in the repository.
 
-> 本项目是基于公开 Aeron API 的独立示例，不包含、也不声称复现 OKX 私有源码或机密架构。
+> This is an independent example based on public Aeron APIs. It does not
+> contain or claim to reproduce proprietary OKX source code or confidential
+> architecture.
 
-## 生产边界
+## System boundary
 
 ```text
-┌──────────────────────── 上游系统 ────────────────────────┐
-│ Matching / Event Service                                │
-│   └─ SBE MatchingEvent ──> Aeron ──> Aeron Archive      │
-└─────────────────────────────┬────────────────────────────┘
+┌──────────────────────── Upstream Systems ──────────────────┐
+│ Matching / Event Service                                  │
+│   └─ SBE MatchingEvent ──> Aeron ──> Aeron Archive        │
+└─────────────────────────────┬──────────────────────────────┘
                               │ recordingId + Position
                               ▼
-┌──────────────────── Aeron Replay Service ────────────────┐
-│ POST /api/v1/replays                                     │
-│   └─ ReplayJobManager（异步、同 checkpointKey 串行）      │
-│       └─ AeronReplayCoordinator                          │
-│           ├─ 连接外部 Media Driver / Archive             │
-│           ├─ 按 recordingId + Position 有界回放           │
-│           ├─ SBE 解码、eventSequence gap/duplicate 检查   │
-│           └─ 原子更新 Checkpoint、校验最终状态哈希         │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────── Aeron Replay Service ──────────────────┐
+│ POST /api/v1/replays                                      │
+│   └─ ReplayJobManager (async, serialized per checkpoint)   │
+│       └─ AeronReplayCoordinator                            │
+│           ├─ connects to an external Media Driver/Archive  │
+│           ├─ replays a bounded recordingId + Position      │
+│           ├─ decodes SBE and checks gaps/duplicates        │
+│           └─ atomically replaces checkpoints and verifies  │
+│              the final projection hash                    │
+└────────────────────────────────────────────────────────────┘
 ```
 
-仓库现在只有一个 Maven artifact 和一个可部署进程：
+The repository produces one Maven artifact and one deployable process:
 
 ```text
 aeron-replay-service-1.0.0-SNAPSHOT.jar
 ```
 
-用于启动 `ArchivingMediaDriver` 和测试事件 Publisher 的夹具只存在于 `src/test`，
-不会进入生产 JAR，也不会由服务代码调用。
+The fixtures that start an `ArchivingMediaDriver` and publish test events exist
+only under `src/test`. They are not included in the production JAR and are
+never invoked by production code.
 
-## 快速开始
+## Quick start
 
-要求 Java 21。构建并运行全部测试：
+Java 21 is required. Build the service and run all tests:
 
 ```powershell
 .\scripts\build.ps1
 ```
 
-连接已经运行的 Media Driver / Aeron Archive：
+Connect the service to an existing Media Driver and Aeron Archive:
 
 ```powershell
 .\scripts\run-service.ps1 `
@@ -51,7 +57,7 @@ aeron-replay-service-1.0.0-SNAPSHOT.jar
   -Port 8080
 ```
 
-启动一次回放：
+Start a replay:
 
 ```powershell
 .\scripts\start-replay.ps1 `
@@ -63,7 +69,7 @@ aeron-replay-service-1.0.0-SNAPSHOT.jar
   -CorrelationId "incident-20260802"
 ```
 
-查询任务：
+Query replay jobs and service health:
 
 ```powershell
 Invoke-RestMethod http://localhost:8080/api/v1/replays/{jobId}
@@ -71,18 +77,25 @@ Invoke-RestMethod http://localhost:8080/api/v1/replays
 Invoke-RestMethod http://localhost:8080/actuator/health
 ```
 
-## 回放请求语义
+## Replay request semantics
 
-`recordingId` 是必填项，服务绝不会自行猜测 Recording。`checkpointKey` 标识一份
-独立的恢复状态；同一 key 同时只能有一个回放任务。
+`recordingId` is required. The service never guesses which Recording to use.
+`checkpointKey` identifies an independent recovery state, and only one replay
+job may be active for the same key at a time.
 
-- 已有 Checkpoint：从 `lastAppliedAeronPosition` 继续。
-- 没有 Checkpoint：从 Recording 的 `startPosition` 开始，业务序列预期从 1 开始。
-- 未传 `stopPosition`：任务开始时快照当前 `recordingPosition`/`stopPosition`。
-- 传入期望序列或哈希：完成后校验，不匹配时状态为 `VERIFICATION_FAILED`。
-- 回放异常：状态为 `FAILED`，Checkpoint 仍停留在最后一次原子写入的位置。
+- With an existing checkpoint, replay resumes from
+  `lastAppliedAeronPosition`.
+- Without a checkpoint, replay starts from the Recording's `startPosition`,
+  and the first business sequence is expected to be 1.
+- If `stopPosition` is omitted, the job snapshots the currently available
+  `recordingPosition` or `stopPosition` when it starts.
+- `expectedLastEventSequence` and `expectedStateHash` are both required. If
+  either value does not match, the job ends as `VERIFICATION_FAILED`; final
+  state verification cannot be skipped.
+- If replay execution fails, the job ends as `FAILED`, while the checkpoint
+  remains at the last successfully and atomically replaced state.
 
-Checkpoint 同时保存：
+A checkpoint stores both business progress and Archive stream progress:
 
 ```properties
 recordingId=42
@@ -91,39 +104,52 @@ lastAppliedEventSequence=4000
 stateHash=...
 ```
 
-业务 `eventSequence` 用于检测 gap 和抑制重复；Aeron Position 用于定位 Archive
-字节流，两者不能互相替代。
+The business `eventSequence` detects gaps and suppresses duplicate effects.
+The Aeron Position locates the Archive byte stream. These values have different
+semantics and must never be used interchangeably.
 
-## 目录
+The Archive `recordingPosition` used here only indicates that Archive reports
+the Position as recorded and available as a replay boundary. It does not prove
+that a storage device has completed a durable flush, nor that the data has been
+replicated or cluster-committed. The integration fixture waits for
+`recordingPosition >= publicationPosition` solely to produce deterministic test
+input. This is not a description of an OKX production durability strategy.
+
+## Repository layout
 
 ```text
 src/main/java/.../
-  api/            REST 请求、响应和错误契约
-  application/    异步任务生命周期与并发控制
-  aeron/          Archive 客户端和有界回放
-  checkpoint/     原子 Checkpoint 持久化
-  codec/          SBE 编解码适配
-  config/         Spring Boot 外部化配置
-  domain/         回放事件领域模型
-  projection/     幂等应用、序列和哈希状态
+  api/            REST request, response, and error contracts
+  application/    asynchronous job lifecycle and concurrency control
+  aeron/          Archive client and bounded replay coordination
+  checkpoint/     atomic checkpoint replacement
+  codec/          SBE encoding and decoding adapters
+  config/         Spring Boot external configuration
+  domain/         replay event domain model
+  projection/     idempotent application, sequencing, and state hashing
 
 src/main/resources/
   application.yml
   sbe/matching-events.xml
 
 src/test/
-  真实 ArchivingMediaDriver 和上游 Publisher 测试夹具
+  real ArchivingMediaDriver and upstream publisher test fixtures
 ```
 
-更详细的说明：
+Additional documentation:
 
-- [架构与服务边界](docs/architecture.md)
-- [REST API 契约](docs/api.md)
-- [部署与运维](docs/operations.md)
-- [原始多进程 MVP 指南（历史参考）](docs/reference/original-mvp-guide.md)
+- [Architecture and service boundary](docs/architecture.md)
+- [REST API contract](docs/api.md)
+- [Deployment and operations](docs/operations.md)
+- [Six-point replay review report](docs/replay-six-point-review.md)
+- [Original multi-process MVP guide (historical reference)](docs/reference/original-mvp-guide.md)
 
-## 当前范围
+## Scope
 
-服务实现的是从 Archive 恢复下游投影的核心机制，不负责重新撮合，也不恢复撮合
-引擎自身的 OrderBook。生产接入时可将 `ProjectionState` 替换为实际业务 Handler，
-但必须保留 Position Checkpoint、业务序列幂等和有界回放语义。
+The service implements the core mechanism for rebuilding a downstream
+projection from Archive. It does not re-run matching logic and does not restore
+the matching engine's OrderBook.
+
+A production integration may replace `ProjectionState` with its business
+handler, but it must preserve bounded replay, Aeron Position checkpointing,
+business-sequence idempotency, and final-state verification.
