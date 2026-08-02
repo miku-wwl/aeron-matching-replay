@@ -1,44 +1,43 @@
 # Operations
 
-## Build
+## Build, verify, and demonstrate
 
 ```powershell
 .\mvnw.cmd -ntp clean verify
+.\scripts\demo-replay.ps1
 ```
 
-The build generates Java SBE codecs under
-`target/generated-sources/sbe`, executes unit/API tests, boots the Spring
-context, and runs a real `ArchivingMediaDriver` integration test. That test
-also terminates a child replay JVM with `Runtime.halt(77)` and verifies recovery
-against an uninterrupted replay.
+`clean verify` regenerates SBE Java under `target/generated-sources/sbe`, runs
+unit and API tests, starts a real embedded `ArchivingMediaDriver` for the
+integration matrix, and terminates a child replay JVM with `Runtime.halt(77)`
+to prove hard-crash recovery. The demo runs the focused crash workflow and
+exits non-zero on failure.
+
+Deleting `target/` is safe. Generated SBE encoders and decoders are build output
+and are recreated during `generate-sources`.
 
 ## Package and run
 
 ```powershell
 .\mvnw.cmd -ntp package
-java `
-  --add-opens java.base/jdk.internal.misc=ALL-UNNAMED `
-  --add-opens java.base/java.util.zip=ALL-UNNAMED `
-  -jar .\target\aeron-replay-service-1.0.0-SNAPSHOT.jar
-```
-
-The PowerShell helper supplies the required JVM opens:
-
-```powershell
 .\scripts\run-service.ps1 -AeronDirectory "D:\aeron\driver"
 ```
+
+The helper supplies the JVM module opens required by Aeron. The production
+service expects an upstream Media Driver and Archive; it never embeds them.
 
 ## Configuration
 
 | Environment variable | Default | Purpose |
 |---|---|---|
 | `AERON_DIR` | JVM temp `aeron-default` | Media Driver directory |
-| `REPLAY_CHECKPOINT_DIR` | `./runtime/checkpoints` | Durable service checkpoints |
+| `REPLAY_CHECKPOINT_DIR` | `./runtime/checkpoints` | Progress checkpoints and completion proofs |
 | `REPLAY_CHANNEL` | `aeron:ipc` | Archive replay channel |
 | `REPLAY_STREAM_ID` | `1002` | Replay stream |
-| `REPLAY_TIMEOUT` | `20s` | Connection/poll deadline |
+| `REPLAY_NO_PROGRESS_TIMEOUT` | `20s` | Maximum time without Position advance |
+| `ARCHIVE_REQUEST_TIMEOUT` | `20s` | Archive connect/control request timeout |
 | `REPLAY_FRAGMENT_LIMIT` | `20` | Fragments per subscription poll |
-| `REPLAY_CHECKPOINT_EVERY` | `100` | Applied fragments between checkpoint writes |
+| `REPLAY_CHECKPOINT_EVERY_PROCESSED_MESSAGES` | `100` | Handled messages between checkpoint writes |
 | `REPLAY_WORKER_COUNT` | `1` | Concurrent jobs with distinct checkpoint keys |
 | `REPLAY_QUEUE_CAPACITY` | `100` | Pending task capacity |
 | `ARCHIVE_CONTROL_REQUEST_CHANNEL` | `aeron:ipc?term-length=64k` | Archive request channel |
@@ -46,67 +45,118 @@ The PowerShell helper supplies the required JVM opens:
 | `ARCHIVE_CONTROL_RESPONSE_CHANNEL` | `aeron:ipc` | Archive response channel |
 | `SERVER_PORT` | `8080` | HTTP port |
 
-IPC defaults assume the replay service shares a Media Driver host/runtime with
-the Archive control client. For a UDP Archive control plane, set explicit
-request and response endpoints appropriate for the deployment.
+`maximumReplayDuration` is intentionally unset. Configure a distinct absolute
+limit only when policy requires one, for example:
 
-## Health and task diagnosis
+```powershell
+$env:MATCHING_REPLAY_MAXIMUM_REPLAY_DURATION = "30m"
+.\scripts\run-service.ps1 -AeronDirectory "D:\aeron\driver"
+```
+
+The checkpoint cadence counts all successfully handled SBE messages, including
+duplicates. A duplicate has no business effect but its consumed Aeron Position
+must still become durable.
+
+IPC defaults assume the service shares a Media Driver runtime with the Archive
+control client. For UDP control, configure deployment-specific request and
+response endpoints.
+
+## Health, jobs, and progress
 
 ```powershell
 Invoke-RestMethod http://localhost:8080/actuator/health
 Invoke-RestMethod http://localhost:8080/api/v1/replays
+Invoke-RestMethod http://localhost:8080/actuator/metrics
 ```
 
-The actuator health endpoint proves the service process is ready. Archive
-connectivity is checked lazily by each job and reported as `FAILED`; this avoids
-making an intentionally idle replay service unready merely because an upstream
-maintenance window is in progress.
+Archive connectivity is checked when a job starts, so an idle service can
+remain healthy during an upstream maintenance window. The job resource exposes
+monotonic current Position, stop Position, percentage, last sequence, per-run
+counters, checkpoint Position, throughput, and last progress time.
 
-## Checkpoint handling
+## Structured lifecycle logs
 
-Checkpoint files are the service's persistent recovery state. Back them up with
-the same care as the upstream recording metadata. Do not edit them manually.
+Lifecycle event names are:
 
-Each write forces a temporary file and requires atomic replacement on the same
-filesystem. If atomic move is unsupported, the job fails instead of degrading
-to a non-atomic overwrite. The implementation does not force the parent
-directory and does not promise survival of every storage-controller or
-power-loss failure; select and validate the filesystem/storage policy against
-the deployment's failure model.
+```text
+REPLAY_REQUEST_ACCEPTED
+REPLAY_STARTED
+REPLAY_RESUMED
+REPLAY_CHECKPOINTED
+REPLAY_BOUNDARY_REACHED
+REPLAY_VERIFIED
+REPLAY_VERIFICATION_FAILED
+REPLAY_FAILED
+```
 
-To deliberately reset local development checkpoints:
+Every lifecycle event contains `jobId`; MDC carries `jobId`, `correlationId`,
+and `recordingId`. Position, sequence, counters, failure code, and duration are
+included where relevant. Logging occurs at lifecycle/checkpoint boundaries, not
+for every event.
+
+## Micrometer metrics
+
+Actuator exposes the following low-cardinality meters:
+
+| Meter | Meaning |
+|---|---|
+| `replay.jobs` with terminal `status` tag | Completed jobs by status |
+| `replay.duration` | Execution time |
+| `replay.events.applied` | Newly applied events |
+| `replay.duplicates` | Suppressed duplicates |
+| `replay.sequence.gaps` | Detected sequence gaps |
+| `replay.checkpoint.writes` | Successful progress checkpoint writes |
+| `replay.checkpoint.write.failures` | Failed checkpoint writes |
+| `replay.position.lag` | Aggregate remaining Position for active jobs |
+| `replay.no.progress.timeouts` | Jobs stopped by no-progress watchdog |
+
+No meter uses `jobId`, `correlationId`, `recordingId`, or `checkpointKey` as a
+label.
+
+Example:
+
+```powershell
+Invoke-RestMethod http://localhost:8080/actuator/metrics/replay.jobs
+Invoke-RestMethod http://localhost:8080/actuator/metrics/replay.position.lag
+```
+
+## Replay state handling
+
+Progress checkpoints are stored directly in the configured directory.
+Completion proofs are separate and live in its `completion-proofs` child
+directory. Do not edit either manually.
+
+Writes force a temporary file and require atomic replacement on the same
+filesystem. Unsupported atomic move fails the job instead of silently
+degrading. This does not guarantee parent-directory `fsync`, device durability,
+or replication; storage must be selected for the deployment failure model.
+
+To deliberately remove local development replay state:
 
 ```powershell
 .\scripts\clean-data.ps1 -Confirm
 ```
 
-Resetting a checkpoint causes the next job for that key to replay from the
-recording start and expect the first business sequence to be 1.
-
-## Publication, recording, and durability
-
-These operational milestones are distinct:
-
-| Milestone | What it proves | What it does not prove |
-|---|---|---|
-| Publication accepts an offer | Aeron assigned a stream Position | Archive has recorded it |
-| Archive counter reaches the Position | The Position is reported recorded/available | Device `fsync`, replication, or cluster commit |
-| Storage durability policy acknowledges | The configured device failure model is covered | A remote replica committed |
-| Replication/cluster policy acknowledges | The configured replicated failure model is covered | Any stronger policy not explicitly configured |
-
-The service reads `recordingPosition` for an active Recording and
-`stopPosition` for a stopped Recording. The integration fixture waits until the
-counter catches the final Publication Position solely to prevent a race in the
-test. This wait is an MVP/test trade-off, not a statement that OKX production
-does the same. Production systems may choose asynchronous recording,
-replication, Aeron Cluster, or another journal according to their own latency
-and loss budget.
+This removes both progress checkpoints and completion proofs but preserves
+`runtime/checkpoints/.gitkeep`.
 
 ## Failure behavior
 
-- A gap or corrupt SBE message fails the job immediately.
-- A timeout leaves the last periodically persisted checkpoint intact.
-- A final checkpoint is written only after the requested replay range is
-  consumed.
-- A verification mismatch is distinct from an execution failure.
-- Jobs for the same checkpoint key are rejected with HTTP 409.
+- A decode/schema failure or sequence gap stops immediately and cannot advance
+  the checkpoint past the invalid fragment.
+- A healthy replay can run longer than `REPLAY_NO_PROGRESS_TIMEOUT` while its
+  Position continues to advance.
+- A stalled replay fails with `NO_PROGRESS_TIMEOUT` and diagnostics.
+- A final progress checkpoint is written when the bounded Position is reached.
+- A verification mismatch retains that checkpoint, returns expected/actual
+  values, and creates no new completion proof.
+- A completion proof is written atomically only for a `VERIFIED` result.
+
+## Publication, recording, and durability
+
+Publication acceptance, Archive recording progress, device durability, and
+replicated/cluster commit are distinct milestones. The integration fixture
+waits until `recordingPosition >= publishedPosition` solely to remove a test
+race. This is an MVP verification trade-off, not a description of OKX
+production. Production systems may choose asynchronous Archive recording,
+replication, Aeron Cluster log semantics, or another durability policy.

@@ -13,14 +13,13 @@ import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.github.mikuwwl.matchingreplay.codec.MatchingEventSbeEncoder;
 import io.github.mikuwwl.matchingreplay.config.ReplayProperties;
-import io.github.mikuwwl.matchingreplay.domain.Hashing;
 import io.github.mikuwwl.matchingreplay.domain.MatchingEvent;
+import io.github.mikuwwl.matchingreplay.domain.ReplayDigest;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.CountersReader;
 
-import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -83,6 +82,37 @@ public final class EmbeddedArchiveFixture implements AutoCloseable
 
     public Recording record(final List<MatchingEvent> events)
     {
+        final MatchingEventSbeEncoder encoder = new MatchingEventSbeEncoder();
+        final UnsafeBuffer buffer = new UnsafeBuffer(
+            new byte[MatchingEventSbeEncoder.MAX_ENCODED_LENGTH]);
+        final List<byte[]> messages = new ArrayList<>(events.size());
+        final List<Long> replayDigests = new ArrayList<>(events.size());
+        long replayDigest = ReplayDigest.INITIAL_VALUE;
+        for (final MatchingEvent event : events)
+        {
+            final int length = encoder.encode(event, buffer, 0);
+            final byte[] message = new byte[length];
+            buffer.getBytes(0, message);
+            messages.add(message);
+            replayDigest = ReplayDigest.mixEvent(replayDigest, event);
+            replayDigests.add(replayDigest);
+        }
+        return recordEncoded(messages, replayDigests);
+    }
+
+    public Recording recordRaw(final List<byte[]> messages)
+    {
+        return recordEncoded(
+            messages,
+            java.util.Collections.nCopies(
+                messages.size(),
+                ReplayDigest.INITIAL_VALUE));
+    }
+
+    private Recording recordEncoded(
+        final List<byte[]> messages,
+        final List<Long> replayDigests)
+    {
         try (Aeron aeron = connectAeron("upstream-test-publisher");
             AeronArchive archive = connectArchive(aeron, "upstream-test-archive"))
         {
@@ -100,19 +130,18 @@ public final class EmbeddedArchiveFixture implements AutoCloseable
                     publication.sessionId(),
                     archive.archiveId());
                 final long recordingId = RecordingPos.getRecordingId(aeron.countersReader(), counterId);
-                final MatchingEventSbeEncoder encoder = new MatchingEventSbeEncoder();
-                final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(512));
-                final List<Long> eventEndPositions = new ArrayList<>(events.size());
-                final List<Long> stateHashes = new ArrayList<>(events.size());
+                final List<Long> eventEndPositions = new ArrayList<>(messages.size());
                 long finalPosition = 0;
-                long expectedHash = Hashing.FNV_OFFSET_BASIS;
-                for (final MatchingEvent event : events)
+                for (int index = 0; index < messages.size(); index++)
                 {
-                    final int length = encoder.encode(event, buffer, 0);
-                    finalPosition = offer(publication, buffer, length, event.eventSequence());
-                    expectedHash = Hashing.mixEvent(expectedHash, event);
+                    final byte[] message = messages.get(index);
+                    final UnsafeBuffer buffer = new UnsafeBuffer(message);
+                    finalPosition = offer(
+                        publication,
+                        buffer,
+                        message.length,
+                        index + 1L);
                     eventEndPositions.add(finalPosition);
-                    stateHashes.add(expectedHash);
                 }
                 final long requiredPosition = finalPosition;
                 await(
@@ -121,11 +150,14 @@ public final class EmbeddedArchiveFixture implements AutoCloseable
                 archive.stopRecording(recordingSubscriptionId);
                 return new Recording(
                     recordingId,
+                    archive.getStartPosition(recordingId),
                     finalPosition,
-                    events.size(),
-                    expectedHash,
+                    messages.size(),
+                    replayDigests.isEmpty() ?
+                        ReplayDigest.INITIAL_VALUE :
+                        replayDigests.getLast(),
                     eventEndPositions,
-                    stateHashes);
+                    replayDigests);
             }
             finally
             {
@@ -141,9 +173,10 @@ public final class EmbeddedArchiveFixture implements AutoCloseable
         properties.setCheckpointDirectory(checkpointDirectory);
         properties.setReplayChannel("aeron:ipc");
         properties.setReplayStreamId(1002);
-        properties.setTimeout(TIMEOUT);
+        properties.setNoProgressTimeout(TIMEOUT);
+        properties.setArchiveRequestTimeout(TIMEOUT);
         properties.setFragmentLimit(20);
-        properties.setCheckpointEvery(50);
+        properties.setCheckpointEveryProcessedMessages(50);
         properties.getArchive().setControlRequestChannel(LOCAL_CONTROL_CHANNEL);
         properties.getArchive().setControlRequestStreamId(LOCAL_CONTROL_STREAM_ID);
         properties.getArchive().setControlResponseChannel(CONTROL_RESPONSE_CHANNEL);
@@ -235,19 +268,21 @@ public final class EmbeddedArchiveFixture implements AutoCloseable
 
     public record Recording(
         long recordingId,
+        long startPosition,
         long stopPosition,
         long eventCount,
-        long expectedStateHash,
+        long expectedReplayDigest,
         List<Long> eventEndPositions,
-        List<Long> stateHashes)
+        List<Long> replayDigests)
     {
         public Recording
         {
             eventEndPositions = List.copyOf(eventEndPositions);
-            stateHashes = List.copyOf(stateHashes);
-            if (eventEndPositions.size() != eventCount || stateHashes.size() != eventCount)
+            replayDigests = List.copyOf(replayDigests);
+            if (eventEndPositions.size() != eventCount || replayDigests.size() != eventCount)
             {
-                throw new IllegalArgumentException("Every event must have a position and state hash");
+                throw new IllegalArgumentException(
+                    "Every event must have a position and replay digest");
             }
         }
 
@@ -256,9 +291,9 @@ public final class EmbeddedArchiveFixture implements AutoCloseable
             return eventEndPositions.get(indexOf(eventSequence));
         }
 
-        public long hashAfterSequence(final long eventSequence)
+        public long digestAfterSequence(final long eventSequence)
         {
-            return stateHashes.get(indexOf(eventSequence));
+            return replayDigests.get(indexOf(eventSequence));
         }
 
         private int indexOf(final long eventSequence)

@@ -1,8 +1,10 @@
 package io.github.mikuwwl.matchingreplay.projection;
 
 import io.github.mikuwwl.matchingreplay.checkpoint.Checkpoint;
-import io.github.mikuwwl.matchingreplay.domain.Hashing;
 import io.github.mikuwwl.matchingreplay.domain.MatchingEvent;
+import io.github.mikuwwl.matchingreplay.domain.ReplayDigest;
+import io.github.mikuwwl.matchingreplay.failure.ReplayException;
+import io.github.mikuwwl.matchingreplay.failure.ReplayFailure;
 
 import java.time.Instant;
 
@@ -10,19 +12,18 @@ public final class ProjectionState
 {
     private long lastAppliedEventSequence;
     private long lastAppliedAeronPosition;
-    private long appliedEventCount;
-    private long duplicateEventCount;
-    private long gapCount;
-    private long stateHash;
+    private long appliedEventsTotal;
+    private long duplicatesTotal;
+    private long sequenceGapsThisRun;
+    private long replayDigest;
 
     private ProjectionState(final Checkpoint checkpoint)
     {
         lastAppliedEventSequence = checkpoint.lastAppliedEventSequence();
         lastAppliedAeronPosition = checkpoint.lastAppliedAeronPosition();
-        appliedEventCount = checkpoint.appliedEventCount();
-        duplicateEventCount = checkpoint.duplicateEventCount();
-        gapCount = checkpoint.gapCount();
-        stateHash = checkpoint.stateHash();
+        appliedEventsTotal = checkpoint.appliedEventsTotal();
+        duplicatesTotal = checkpoint.duplicatesTotal();
+        replayDigest = checkpoint.replayDigest();
     }
 
     public static ProjectionState from(final Checkpoint checkpoint)
@@ -39,8 +40,7 @@ public final class ProjectionState
             recordingStartPosition,
             0,
             0,
-            0,
-            Hashing.FNV_OFFSET_BASIS,
+            ReplayDigest.INITIAL_VALUE,
             Instant.EPOCH));
     }
 
@@ -54,22 +54,23 @@ public final class ProjectionState
         }
         if (event.eventSequence() <= lastAppliedEventSequence)
         {
-            duplicateEventCount++;
+            duplicatesTotal++;
             lastAppliedAeronPosition = aeronPosition;
             return ApplyResult.DUPLICATE;
         }
         if (event.eventSequence() != lastAppliedEventSequence + 1)
         {
-            gapCount++;
-            throw new IllegalStateException(
-                "Event gap: expected=" + (lastAppliedEventSequence + 1) +
-                ", actual=" + event.eventSequence());
+            sequenceGapsThisRun++;
+            throw new ReplayException(ReplayFailure.sequenceGap(
+                lastAppliedAeronPosition,
+                lastAppliedEventSequence,
+                event.eventSequence()));
         }
 
-        stateHash = Hashing.mixEvent(stateHash, event);
+        replayDigest = ReplayDigest.mixEvent(replayDigest, event);
         lastAppliedEventSequence = event.eventSequence();
         lastAppliedAeronPosition = aeronPosition;
-        appliedEventCount++;
+        appliedEventsTotal++;
         return ApplyResult.APPLIED;
     }
 
@@ -80,10 +81,9 @@ public final class ProjectionState
             recordingId,
             lastAppliedEventSequence,
             lastAppliedAeronPosition,
-            appliedEventCount,
-            duplicateEventCount,
-            gapCount,
-            stateHash,
+            appliedEventsTotal,
+            duplicatesTotal,
+            replayDigest,
             Instant.now());
     }
 
@@ -97,24 +97,24 @@ public final class ProjectionState
         return lastAppliedAeronPosition;
     }
 
-    public long appliedEventCount()
+    public long appliedEventsTotal()
     {
-        return appliedEventCount;
+        return appliedEventsTotal;
     }
 
-    public long duplicateEventCount()
+    public long duplicatesTotal()
     {
-        return duplicateEventCount;
+        return duplicatesTotal;
     }
 
-    public long gapCount()
+    public long sequenceGapsThisRun()
     {
-        return gapCount;
+        return sequenceGapsThisRun;
     }
 
-    public long stateHash()
+    public long replayDigest()
     {
-        return stateHash;
+        return replayDigest;
     }
 
     public enum ApplyResult

@@ -1,155 +1,196 @@
-# Aeron Archive Replay Service
+# Aeron Archive Replay Reference
 
-This repository contains a single-deployment Spring Boot replay service. It
-coordinates and executes replay jobs without embedding the matching engine,
-event producer, Media Driver, Aeron Archive, or consumer as separate
-applications in the repository.
+[![Replay Verification](https://github.com/miku-wwl/aeron-matching-replay/actions/workflows/replay-verification.yml/badge.svg)](https://github.com/miku-wwl/aeron-matching-replay/actions/workflows/replay-verification.yml)
 
-> This is an independent example based on public Aeron APIs. It does not
-> contain or claim to reproduce proprietary OKX source code or confidential
-> architecture.
+An Aeron Archive–based replay and recovery reference implementation for
+SBE-encoded matching event streams, with bounded replay, position-based
+checkpointing, sequence validation, crash recovery, deterministic verification,
+and observable replay progress.
 
-## System boundary
+This repository is one Java 21 Spring Boot service. It cooperates with an
+upstream Aeron Media Driver and Archive in normal operation; tests start a real
+embedded Archive so the complete workflow is reproducible.
 
-```text
-┌──────────────────────── Upstream Systems ──────────────────┐
-│ Matching / Event Service                                  │
-│   └─ SBE MatchingEvent ──> Aeron ──> Aeron Archive        │
-└─────────────────────────────┬──────────────────────────────┘
-                              │ recordingId + Position
-                              ▼
-┌──────────────────── Aeron Replay Service ──────────────────┐
-│ POST /api/v1/replays                                      │
-│   └─ ReplayJobManager (async, serialized per checkpoint)   │
-│       └─ AeronReplayCoordinator                            │
-│           ├─ connects to an external Media Driver/Archive  │
-│           ├─ replays a bounded recordingId + Position      │
-│           ├─ decodes SBE and checks gaps/duplicates        │
-│           └─ atomically replaces checkpoints and verifies  │
-│              the final projection hash                    │
-└────────────────────────────────────────────────────────────┘
-```
-
-The repository produces one Maven artifact and one deployable process:
+## What this project demonstrates
 
 ```text
-aeron-replay-service-1.0.0-SNAPSHOT.jar
+Capture recordingId and bounded stop Position
+                    |
+                    v
+           Load progress checkpoint
+                    |
+                    v
+       Start real Aeron Archive replay
+                    |
+                    v
+        Decode Maven-generated SBE codecs
+                    |
+                    v
+       Validate business eventSequence
+          /                       \
+    duplicate                  next event
+        |                          |
+advance Position        apply deterministic digest
+          \                       /
+                    v
+ publish progress and atomically checkpoint Position
+                    |
+                    v
+        resume safely after a hard crash
+                    |
+                    v
+ verify final sequence + digest, then write proof
 ```
 
-The fixtures that start an `ArchivingMediaDriver` and publish test events exist
-only under `src/test`. They are not included in the production JAR and are
-never invoked by production code.
+The service uses the Aeron Archive replay API. It does not simulate replay by
+reading recording files.
 
-## Quick start
+## Core invariants
 
-Java 21 is required. Build the service and run all tests:
+- **Replay boundary:** only fragments up to the captured stop Position are
+  consumed. Data appended later is outside that run.
+- **Sequence:** each newly applied event must have
+  `eventSequence = lastAppliedEventSequence + 1`.
+- **Duplicate:** an already-applied sequence advances the consumed Aeron
+  Position, but does not change the digest or applied-event count.
+- **Checkpoint:** `Header.position()` is saved only after the complete fragment
+  has been decoded and handled. It is never confused with the fragment start.
+- **Crash recovery:** the next process resumes at the last atomically persisted
+  Aeron Position. Business `eventSequence` remains a separate value.
+- **Verification:** a completion proof is written only after both the expected
+  final sequence and expected replay digest match.
+
+## One-command demonstration
+
+Prerequisites: JDK 21. Maven is supplied by the wrapper.
 
 ```powershell
-.\scripts\build.ps1
+.\scripts\demo-replay.ps1
 ```
 
-Connect the service to an existing Media Driver and Aeron Archive:
-
-```powershell
-.\scripts\run-service.ps1 `
-  -AeronDirectory "D:\aeron\driver" `
-  -CheckpointDirectory ".\runtime\checkpoints" `
-  -Port 8080
-```
-
-Start a replay:
-
-```powershell
-.\scripts\start-replay.ps1 `
-  -RecordingId 42 `
-  -CheckpointKey "orders-projection" `
-  -StopPosition 1349472 `
-  -ExpectedLastEventSequence 12425 `
-  -ExpectedStateHash "18013645834701933210" `
-  -CorrelationId "incident-20260802"
-```
-
-Query replay jobs and service health:
-
-```powershell
-Invoke-RestMethod http://localhost:8080/api/v1/replays/{jobId}
-Invoke-RestMethod http://localhost:8080/api/v1/replays
-Invoke-RestMethod http://localhost:8080/actuator/health
-```
-
-## Replay request semantics
-
-`recordingId` is required. The service never guesses which Recording to use.
-`checkpointKey` identifies an independent recovery state, and only one replay
-job may be active for the same key at a time.
-
-- With an existing checkpoint, replay resumes from
-  `lastAppliedAeronPosition`.
-- Without a checkpoint, replay starts from the Recording's `startPosition`,
-  and the first business sequence is expected to be 1.
-- If `stopPosition` is omitted, the job snapshots the currently available
-  `recordingPosition` or `stopPosition` when it starts.
-- `expectedLastEventSequence` and `expectedStateHash` are both required. If
-  either value does not match, the job ends as `VERIFICATION_FAILED`; final
-  state verification cannot be skipped.
-- If replay execution fails, the job ends as `FAILED`, while the checkpoint
-  remains at the last successfully and atomically replaced state.
-
-A checkpoint stores both business progress and Archive stream progress:
-
-```properties
-recordingId=42
-lastAppliedAeronPosition=434080
-lastAppliedEventSequence=4000
-stateHash=...
-```
-
-The business `eventSequence` detects gaps and suppresses duplicate effects.
-The Aeron Position locates the Archive byte stream. These values have different
-semantics and must never be used interchangeably.
-
-The Archive `recordingPosition` used here only indicates that Archive reports
-the Position as recorded and available as a replay boundary. It does not prove
-that a storage device has completed a durable flush, nor that the data has been
-replicated or cluster-committed. The integration fixture waits for
-`recordingPosition >= publicationPosition` solely to produce deterministic test
-input. This is not a description of an OKX production durability strategy.
-
-## Repository layout
+The command starts a real embedded Media Driver and Archive, records 1,000
+Maven-SBE-encoded events, performs an uninterrupted replay, terminates a child
+JVM with `Runtime.halt(77)` at checkpoint sequence 400, and resumes in a fresh
+coordinator. Output includes recording and boundary Positions, the crash
+checkpoint, the first sequence after restart, both digests, counters, and:
 
 ```text
-src/main/java/.../
-  api/            REST request, response, and error contracts
-  application/    asynchronous job lifecycle and concurrency control
-  aeron/          Archive client and bounded replay coordination
-  checkpoint/     atomic checkpoint replacement
-  codec/          SBE encoding and decoding adapters
-  config/         Spring Boot external configuration
-  domain/         replay event domain model
-  projection/     idempotent application, sequencing, and state hashing
+[1/6] Started embedded Aeron Archive
+[2/6] Recorded 1,000 SBE events
+[3/6] Completed uninterrupted replay
+[4/6] Halted replay process after checkpoint sequence 400
+[5/6] Resumed from saved Aeron position
+[6/6] Final replay digest matched uninterrupted replay
 
-src/main/resources/
-  application.yml
-  sbe/matching-events.xml
-
-src/test/
-  real ArchivingMediaDriver and upstream publisher test fixtures
+REPLAY WORKFLOW: PASS
 ```
 
-Additional documentation:
+The proof is stronger than a graceful-restart test: the child cannot run normal
+shutdown hooks. After restart, the first newly applied event is sequence 401,
+the cumulative applied count is 1,000, duplicates are zero, and the resumed
+digest equals the uninterrupted digest.
 
-- [Architecture and service boundary](docs/architecture.md)
-- [REST API contract](docs/api.md)
-- [Deployment and operations](docs/operations.md)
-- [Six-point replay review report](docs/replay-six-point-review.md)
-- [Original multi-process MVP guide (historical reference)](docs/reference/original-mvp-guide.md)
+## API example
 
-## Scope
+Start the service against an existing Media Driver and Archive:
 
-The service implements the core mechanism for rebuilding a downstream
-projection from Archive. It does not re-run matching logic and does not restore
-the matching engine's OrderBook.
+```powershell
+.\scripts\run-service.ps1 -AeronDirectory "D:\aeron\driver"
+```
 
-A production integration may replace `ProjectionState` with its business
-handler, but it must preserve bounded replay, Aeron Position checkpointing,
-business-sequence idempotency, and final-state verification.
+Submit a bounded replay:
+
+```http
+POST /api/v1/replays
+Content-Type: application/json
+
+{
+  "recordingId": 42,
+  "checkpointKey": "orders-projection",
+  "stopPosition": 1349472,
+  "expectedLastEventSequence": 12425,
+  "expectedReplayDigest": "18013645834701933210",
+  "correlationId": "recovery-2026-08-02"
+}
+```
+
+The request returns `202 Accepted`. Poll
+`GET /api/v1/replays/{jobId}`. A running response exposes `currentPosition`,
+`progressPercent`, `lastEventSequence`, per-run counters, latest checkpoint
+Position, throughput, and `lastProgressAt`. Terminal state is `VERIFIED`,
+`VERIFICATION_FAILED`, or `FAILED`; failures include a stable code and
+diagnostic fields rather than requiring message parsing.
+
+Counter names are explicit:
+
+- `appliedEventsThisRun` and `duplicatesThisRun` describe this execution.
+- `appliedEventsTotal` and `duplicatesTotal` include the loaded checkpoint.
+- `sequenceGapsThisRun` belongs only to this execution attempt.
+
+See [API reference](docs/api.md) for complete request and response examples.
+
+## Failure scenarios proved by tests
+
+| Scenario | Invariant proved |
+|---|---|
+| Bounded replay | Appended events beyond the captured stop Position are excluded |
+| Duplicate sequence | Position advances; digest and applied count do not |
+| Sequence gap | Fails with `SEQUENCE_GAP`; checkpoint remains at the last good event |
+| Invalid/future SBE | Fails with a structured codec code and does not advance checkpoint |
+| Verification mismatch | Progress remains valid but no completion proof is created or overwritten |
+| Hard process crash | Fresh process resumes at saved Position and matches uninterrupted digest |
+| No progress | Healthy long replay can exceed the timeout interval; a stalled replay fails |
+| Schema evolution | Current decoder reads v1 and v2, and rejects unsupported future versions |
+
+## Replay digest
+
+The rolling FNV-64 digest is a compact deterministic event-stream proof, not a
+database or OrderBook state hash. Its canonical field order is:
+
+```text
+eventSequence, eventType, orderId, contraOrderId, tradeId,
+symbolId, side, price, quantity, remainingQuantity
+```
+
+Timestamp, schema version, `sourceId`, and all Aeron transport metadata are
+excluded. The current digest is persisted in the progress checkpoint, making
+the chain resumable.
+
+## Explicit non-goals
+
+This project does not restore a matching engine or OrderBook, replay commands
+into matching logic, reconstruct maker/taker decisions, implement trading risk
+controls, or provide PostgreSQL/Kafka/Kubernetes/authentication/UI features.
+The small matching-event model exists only to produce realistic replay input.
+The implementation must not be read as a description of any proprietary OKX
+production architecture.
+
+## Build and test
+
+```powershell
+.\mvnw.cmd -ntp clean verify
+```
+
+`generate-sources` runs the official SBE tool against
+`src/main/resources/sbe/matching-events.xml`; generated Java is written only to
+`target/generated-sources/sbe`. Deleting `target/` is safe because Maven
+regenerates the codecs.
+
+The full suite uses an actual `ArchivingMediaDriver`, covers the focused failure
+matrix, and runs the hard-crash child-JVM test. CI runs the same command on
+pushes to `main` and pull requests.
+
+## Operations and observability
+
+Progress checkpoints live in `runtime/checkpoints`; verified completion proofs
+are separate files in `runtime/checkpoints/completion-proofs`. The checkpoint
+cadence counts all successfully processed messages, including duplicates,
+because their consumed Aeron Position must be recoverable.
+
+Actuator exposes replay-focused Micrometer metrics at `/actuator/metrics`.
+Lifecycle logs carry MDC `jobId`, `correlationId`, and `recordingId` and avoid
+per-event logging. See:
+
+- [Architecture](docs/architecture.md)
+- [Operations](docs/operations.md)
+- [Six-point replay review](docs/replay-six-point-review.md)

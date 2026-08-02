@@ -11,20 +11,20 @@ public record StartReplayRequest(
     @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9._-]{0,127}") String checkpointKey,
     @PositiveOrZero Long stopPosition,
     @NotNull @PositiveOrZero Long expectedLastEventSequence,
-    @NotNull @Pattern(regexp = "[0-9]{1,20}") String expectedStateHash,
+    @NotNull @Pattern(regexp = "[0-9]{1,20}") String expectedReplayDigest,
     @Size(max = 128) String correlationId)
 {
     public ReplayCommand toCommand()
     {
         final String effectiveCheckpointKey =
             checkpointKey == null || checkpointKey.isBlank() ? "default" : checkpointKey;
-        final long parsedStateHash = Long.parseUnsignedLong(expectedStateHash);
+        final long parsedReplayDigest = Long.parseUnsignedLong(expectedReplayDigest);
         return new ReplayCommand(
             recordingId.longValue(),
             effectiveCheckpointKey,
             stopPosition,
             expectedLastEventSequence.longValue(),
-            parsedStateHash,
+            parsedReplayDigest,
             correlationId);
     }
 }

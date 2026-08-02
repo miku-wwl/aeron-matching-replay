@@ -2,159 +2,183 @@
 
 ## Deployment model
 
-The repository produces one Spring Boot process: `aeron-replay-service`.
-Matching, event publication, the Media Driver, and Aeron Archive are upstream
-runtime dependencies, not sibling applications in this repository.
+The repository builds one Java 21 Spring Boot process:
+`aeron-replay-service`. Matching, event publication, the Media Driver, and
+Aeron Archive remain upstream responsibilities. Production code connects to an
+existing Archive; only tests start an embedded `ArchivingMediaDriver`.
 
 ```text
-                    control plane
-Operator / upstream coordinator
-            │
-            │ POST recordingId, checkpointKey, stopPosition, expectations
-            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Spring Boot Aeron Replay Service                            │
-│                                                             │
-│ ReplayController                                            │
-│      │ 202 + jobId                                          │
-│      ▼                                                      │
-│ ReplayJobManager ── one active job per checkpointKey        │
-│      │                                                      │
-│      ▼                                                      │
-│ AeronReplayCoordinator                                      │
-│      ├─ CheckpointRepository                                │
-│      ├─ generated SBE decoder                               │
-│      └─ ProjectionState                                     │
-└───────────────┬─────────────────────────────────────────────┘
-                │ Aeron Archive control + replay stream
-                ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Upstream runtime                                            │
-│ Media Driver <──> Aeron Archive Recording                   │
-│                       ▲                                     │
-│                       │ SBE matching-event stream           │
-│               Matching / event service                      │
-└─────────────────────────────────────────────────────────────┘
+Replay request / manifest
+ recordingId, optional stopPosition, expected sequence + digest
+                              |
+                              v
+                    ReplayController (202)
+                              |
+                              v
+             ReplayJobManager + live progress + MDC
+                              |
+                              v
+                   AeronReplayCoordinator
+           /                  |                  \
+progress checkpoint   generated SBE decode   completion proof
+           \                  |                  /
+                              v
+               real Aeron Archive replay API
+                              |
+                              v
+                   upstream recording runtime
 ```
 
-## Ownership
+One active job is allowed per `checkpointKey`. Multiple keys may execute up to
+the configured worker count.
 
-| Concern | Owner |
-|---|---|
-| Matching and order-book state | Upstream matching service |
-| Event publication and negative `offer()` handling | Upstream event service |
-| Media Driver lifecycle | Deployment platform / upstream runtime |
-| Archive catalog and segments | Aeron Archive |
-| Replay admission and job status | This service |
-| Replay SBE decoding | This service |
-| Projection checkpoint | This service |
-| Expected final sequence and hash | Calling coordinator/upstream metadata |
+## Replay workflow
 
-The production artifact never launches an `ArchivingMediaDriver`. The real
-Archive is embedded only by the integration test.
+1. Resolve the recording start and currently available end Position through
+   Aeron Archive.
+2. Validate or capture the bounded stop Position once.
+3. Load the progress checkpoint and validate its `recordingId` and Position.
+4. Call `AeronArchive.startReplay(recordingId, startPosition, length, ...)`.
+5. Poll the replay `Subscription`; decode every fragment with Maven-generated
+   SBE codecs.
+6. Classify the business sequence as duplicate, next event, or gap.
+7. Apply the deterministic digest only for a next event.
+8. Advance consumed progress to `Header.position()` only after complete
+   handling.
+9. Publish immutable live progress and periodically persist an atomic progress
+   checkpoint.
+10. At the bounded stop, write the final progress checkpoint and verify the
+    expected sequence and digest.
+11. Write a separate completion proof only on a match, then mark the job
+    `VERIFIED`.
 
-## Replay sequence
+If verification fails, the completed progress checkpoint is retained because
+processed projection effects may already be committed. No completion proof is
+created or overwritten.
 
-```text
-Caller             Replay Service          Checkpoint       Aeron Archive
-  │ POST command         │                      │                  │
-  ├─────────────────────>│ validate + enqueue   │                  │
-  │<────── 202 jobId ────┤                      │                  │
-  │                      │ read(checkpointKey)  │                  │
-  │                      ├─────────────────────>│                  │
-  │                      │<── state + position ─┤                  │
-  │                      │ get recording range                     │
-  │                      ├────────────────────────────────────────>│
-  │                      │ startReplay(recordingId, position, len) │
-  │                      ├────────────────────────────────────────>│
-  │                      │<──────────── SBE fragments ─────────────┤
-  │                      │ decode/apply/check sequence             │
-  │                      │ atomic replace      │                  │
-  │                      ├─────────────────────>│                  │
-  │                      │ stop replay session                    │
-  │                      ├────────────────────────────────────────>│
-  │ GET jobId            │                      │                  │
-  ├─────────────────────>│                      │                  │
-  │<── result + proof ────┤                      │                  │
-```
+## Position and sequence invariants
 
-The replay stop is bounded. If the request omits `stopPosition`, the service
-captures the currently available recording position once at job start; it does
-not chase a live recording forever.
-
-## Consistency rules
-
-1. A command always names one `recordingId`.
-2. An existing checkpoint must contain the same `recordingId`.
-3. Its Aeron Position must be inside the recording and requested replay range.
-4. `eventSequence == last + 1` applies a business effect.
-5. `eventSequence <= last` is an idempotently suppressed duplicate.
-6. `eventSequence > last + 1` fails immediately as a gap.
-7. The checkpoint is atomically replaced only after application; filesystems
-   without atomic move support fail the checkpoint write.
-8. The mandatory final sequence and unsigned state hash must both match for a
-   `SUCCEEDED` result.
-
-## Position and checkpoint semantics
-
-`ReplayFragmentHandler` decodes a completed Aeron message, applies or
-idempotently suppresses its business event, and only then passes
-`Header.position()` into `ProjectionState`. The saved value is therefore the
-end Position of the fully processed message, not the fragment's starting
-offset. A restart asks Archive to replay from that saved end Position, so the
-next message is the first not represented by the checkpoint.
-
-`eventSequence` and Aeron Position are deliberately separate fields:
-
-| Value | Meaning | Used for |
+| Value | Domain | Purpose |
 |---|---|---|
-| `eventSequence` | Business ordering identity | Gap detection and idempotency |
-| `lastAppliedAeronPosition` | Archive byte-stream progress | Replay start Position |
+| `eventSequence` | business event order | idempotency and gap detection |
+| `lastAppliedAeronPosition` | transport byte stream | Archive restart Position |
+| `stopPosition` | transport byte stream | immutable replay boundary |
+| `replayDigest` | canonical event stream | deterministic verification |
 
-The checkpoint writer forces the temporary file contents and requires a
-same-filesystem atomic move to replace the prior file. It fails rather than
-silently performing a non-atomic replacement. This protects the service's
-process-crash recovery invariant on supported filesystems. It does not claim
-that the parent-directory entry was forced, that a storage device completed a
-power-loss-safe flush, or that the checkpoint was replicated.
+These values are never substituted for one another. `Header.position()` is the
+end Position of the fully assembled and handled Aeron message. A decode, schema,
+or sequence failure therefore cannot advance the checkpoint past the invalid
+fragment.
 
-When replacing the in-memory sample `ProjectionState` with an external
-database or service, the business effect, deduplication record, and checkpoint
-must be made one atomic recovery unit (for example with a transaction or
-Inbox). An atomic checkpoint file alone cannot make an unrelated external side
-effect atomic.
+Sequence rules:
+
+```text
+eventSequence <= last sequence      duplicate: no digest/application change
+eventSequence == last sequence + 1  apply: update digest and applied count
+eventSequence >  last sequence + 1  fail immediately with SEQUENCE_GAP
+```
+
+A duplicate still advances consumed Aeron Position and the processed-message
+checkpoint cadence.
+
+## Persistent artifacts
+
+### Progress checkpoint
+
+Stored under `runtime/checkpoints` and used only for restart:
+
+```properties
+checkpointKey=orders-projection
+recordingId=42
+lastAppliedEventSequence=12425
+lastAppliedAeronPosition=1349472
+appliedEventsTotal=12425
+duplicatesTotal=2
+replayDigest=18013645834701933210
+updatedAt=2026-08-02T00:00:00Z
+```
+
+### Completion proof
+
+Stored under `runtime/checkpoints/completion-proofs` only after verification:
+
+```properties
+checkpointKey=orders-projection
+recordingId=42
+replayStartPosition=434080
+replayStopPosition=1349472
+finalEventSequence=12425
+finalReplayDigest=18013645834701933210
+verificationStatus=VERIFIED
+completedAt=2026-08-02T00:00:01Z
+```
+
+Both use a forced temporary file and require same-filesystem atomic replacement.
+This is a process-crash invariant on a supporting filesystem, not a claim that
+the parent directory, device, or remote replica has committed.
+
+## Digest definition
+
+The resumable rolling FNV-64 digest uses this exact canonical order:
+
+```text
+eventSequence
+eventType
+orderId
+contraOrderId
+tradeId
+symbolId
+side
+price
+quantity
+remainingQuantity
+```
+
+Timestamp, SBE schema version, optional v2 `sourceId`, and Aeron transport
+metadata are excluded. The digest proves deterministic handling of this event
+stream; it is not a complete OrderBook or database state hash.
+
+## Schema evolution
+
+SBE codecs are generated in Maven `generate-sources` from schema version 2.
+The current decoder accepts:
+
+- v1 messages, where `sourceId` is absent and defaults to zero;
+- v2 messages, where optional `sourceId` is present;
+- no future acting version, which fails with `UNSUPPORTED_SCHEMA`.
+
+The field is deliberately excluded from the digest so reading the same
+historical business event through either supported encoding does not change its
+proof.
+
+## Progress and timeout model
+
+The handler emits immutable `ReplayProgress` snapshots. Position is monotonic,
+bounded by the stop Position, and drives a no-progress watchdog. Any Position
+advance refreshes the watchdog, so a healthy large replay may take longer than
+`noProgressTimeout`. An optional `maximumReplayDuration` is a distinct absolute
+limit.
 
 ## Archive durability boundary
 
-Four different observations must not be collapsed into one:
+Do not collapse these observations:
 
-1. `publication.offer(...) > 0`: the Publication accepted the message and
-   returned a stream Position.
-2. `recordingPosition >= publishedPosition`: Archive reports recording progress
-   through that Position, making it an appropriate available replay bound.
-3. Device-durable: the relevant files and metadata have completed the storage
-   guarantees required to survive the selected failure model.
-4. Replicated or cluster-committed: another durability policy has acknowledged
-   the event.
+1. `publication.offer(...) > 0`: Aeron accepted the message and assigned a
+   stream Position.
+2. `recordingPosition >= publishedPosition`: Archive reports the bytes as
+   recorded and available for replay.
+3. Device durable: storage has met the configured power-loss contract.
+4. Replicated/cluster committed: a separate durability policy has acknowledged
+   the data.
 
-The service uses the active `recordingPosition` (or stopped
-`stopPosition`) to bound bytes available from Archive. It does not turn that
-counter into an `fsync`, replication, or cluster-commit claim. The integration
-fixture waits for the counter to reach the publisher's final Position only to
-make the test deterministic.
+The integration fixture waits for step 2 only to remove a test race. This
+latency/reliability trade-off is suitable for the demonstration and is not a
+claim about OKX production. A production design may use asynchronous recording,
+replication, Aeron Cluster, or another journal.
 
-This repository makes no claim about the exact OKX production strategy.
-Depending on a system's requirements, production designs may use asynchronous
-recording, Archive replication, Aeron Cluster log semantics, another journal,
-or a combination of them.
+## External projection boundary
 
-## Extension seam
-
-`ProjectionState` is the sample event applier and verification state. In a real
-integration, replace or wrap it with the target domain handler while preserving:
-
-- decode before dispatch;
-- idempotency by business sequence;
-- checkpoint after successful effects;
-- Aeron `Header.position()` as the resume position;
-- a bounded stop position supplied or snapshotted for the job.
+`ProjectionState` is an in-memory reference consumer. If it is replaced by a
+database or remote side effect, the effect, deduplication/Inbox record, and
+checkpoint need one transactional recovery unit. Atomic checkpoint files alone
+cannot make unrelated external writes idempotent.

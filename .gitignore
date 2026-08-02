@@ -3,6 +3,7 @@
 *.iml
 target/
 .tmp-*/
+tmp/
 
 runtime/checkpoints/*
 

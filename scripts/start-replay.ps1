@@ -13,7 +13,7 @@ param(
 
     [Parameter(Mandatory)]
     [ValidatePattern('^[0-9]{1,20}$')]
-    [string]$ExpectedStateHash,
+    [string]$ExpectedReplayDigest,
 
     [string]$CorrelationId,
 
@@ -25,7 +25,7 @@ $body = @{
     recordingId = $RecordingId
     checkpointKey = $CheckpointKey
     expectedLastEventSequence = $ExpectedLastEventSequence
-    expectedStateHash = $ExpectedStateHash
+    expectedReplayDigest = $ExpectedReplayDigest
 }
 
 if ($null -ne $StopPosition) {

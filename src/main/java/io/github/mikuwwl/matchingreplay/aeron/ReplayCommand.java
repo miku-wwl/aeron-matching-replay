@@ -5,7 +5,7 @@ public record ReplayCommand(
     String checkpointKey,
     Long stopPosition,
     long expectedLastEventSequence,
-    long expectedStateHash,
+    long expectedReplayDigest,
     String correlationId)
 {
     public ReplayCommand

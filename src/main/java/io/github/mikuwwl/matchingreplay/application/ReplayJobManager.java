@@ -1,17 +1,23 @@
 package io.github.mikuwwl.matchingreplay.application;
 
-import io.github.mikuwwl.matchingreplay.aeron.AeronReplayCoordinator;
 import io.github.mikuwwl.matchingreplay.aeron.ReplayCommand;
+import io.github.mikuwwl.matchingreplay.aeron.ReplayEngine;
+import io.github.mikuwwl.matchingreplay.aeron.ReplayProgress;
 import io.github.mikuwwl.matchingreplay.aeron.ReplayResult;
+import io.github.mikuwwl.matchingreplay.failure.ReplayException;
+import io.github.mikuwwl.matchingreplay.failure.ReplayFailure;
+import io.github.mikuwwl.matchingreplay.failure.ReplayFailureCode;
+import io.github.mikuwwl.matchingreplay.observability.ReplayMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
-import java.time.Instant;
+import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -24,28 +30,40 @@ public class ReplayJobManager implements ReplayJobs
 {
     private static final Logger LOGGER = LoggerFactory.getLogger(ReplayJobManager.class);
 
-    private final AeronReplayCoordinator coordinator;
+    private final ReplayEngine replayEngine;
     private final TaskExecutor taskExecutor;
     private final Clock clock;
+    private final ReplayMetrics metrics;
     private final ConcurrentHashMap<UUID, ReplayJobSnapshot> jobs = new ConcurrentHashMap<>();
     private final Set<String> activeCheckpointKeys = ConcurrentHashMap.newKeySet();
 
     @Autowired
     public ReplayJobManager(
-        final AeronReplayCoordinator coordinator,
-        @Qualifier("replayTaskExecutor") final TaskExecutor taskExecutor)
+        final ReplayEngine replayEngine,
+        @Qualifier("replayTaskExecutor") final TaskExecutor taskExecutor,
+        final ReplayMetrics metrics)
     {
-        this(coordinator, taskExecutor, Clock.systemUTC());
+        this(replayEngine, taskExecutor, Clock.systemUTC(), metrics);
     }
 
     ReplayJobManager(
-        final AeronReplayCoordinator coordinator,
+        final ReplayEngine replayEngine,
         final TaskExecutor taskExecutor,
         final Clock clock)
     {
-        this.coordinator = coordinator;
+        this(replayEngine, taskExecutor, clock, ReplayMetrics.noop());
+    }
+
+    ReplayJobManager(
+        final ReplayEngine replayEngine,
+        final TaskExecutor taskExecutor,
+        final Clock clock,
+        final ReplayMetrics metrics)
+    {
+        this.replayEngine = replayEngine;
         this.taskExecutor = taskExecutor;
         this.clock = clock;
+        this.metrics = metrics;
     }
 
     @Override
@@ -66,8 +84,10 @@ public class ReplayJobManager implements ReplayJobs
             null,
             null,
             null,
+            null,
             null);
         jobs.put(jobId, queued);
+        logAccepted(queued);
         try
         {
             taskExecutor.execute(() -> run(jobId));
@@ -103,7 +123,7 @@ public class ReplayJobManager implements ReplayJobs
             return;
         }
 
-        jobs.put(jobId, new ReplayJobSnapshot(
+        final ReplayJobSnapshot running = new ReplayJobSnapshot(
             jobId,
             queued.command(),
             ReplayJobState.RUNNING,
@@ -111,51 +131,262 @@ public class ReplayJobManager implements ReplayJobs
             clock.instant(),
             null,
             null,
-            null));
-        try
+            null,
+            null);
+        jobs.put(jobId, running);
+
+        try (MDC.MDCCloseable ignoredJob = MDC.putCloseable(
+                "jobId",
+                jobId.toString());
+            MDC.MDCCloseable ignoredCorrelation = MDC.putCloseable(
+                "correlationId",
+                nullToEmpty(queued.command().correlationId()));
+            MDC.MDCCloseable ignoredRecording = MDC.putCloseable(
+                "recordingId",
+                Long.toString(queued.command().recordingId())))
         {
-            final ReplayResult result = coordinator.replay(queued.command());
-            final ReplayJobState state = result.verificationPassed() ?
-                ReplayJobState.SUCCEEDED : ReplayJobState.VERIFICATION_FAILED;
-            final ReplayJobSnapshot running = jobs.get(jobId);
-            jobs.put(jobId, new ReplayJobSnapshot(
+            LOGGER.info(
+                "REPLAY_STARTED jobId={} correlationId={} recordingId={} checkpointKey={}",
                 jobId,
-                queued.command(),
-                state,
-                queued.acceptedAt(),
-                running.startedAt(),
-                clock.instant(),
-                result,
-                null));
-        }
-        catch (final RuntimeException ex)
-        {
-            LOGGER.error(
-                "Replay failed: jobId={}, checkpointKey={}, recordingId={}",
-                jobId,
-                queued.command().checkpointKey(),
+                queued.command().correlationId(),
                 queued.command().recordingId(),
-                ex);
-            final ReplayJobSnapshot running = jobs.get(jobId);
-            jobs.put(jobId, new ReplayJobSnapshot(
-                jobId,
-                queued.command(),
-                ReplayJobState.FAILED,
-                queued.acceptedAt(),
-                running.startedAt(),
-                clock.instant(),
-                null,
-                safeMessage(ex)));
+                queued.command().checkpointKey());
+            try
+            {
+                final ReplayResult result = replayEngine.replay(
+                    queued.command(),
+                    progress -> updateProgress(jobId, progress));
+                complete(jobId, queued, result);
+            }
+            catch (final RuntimeException ex)
+            {
+                fail(jobId, queued, ex);
+            }
+            finally
+            {
+                activeCheckpointKeys.remove(queued.command().checkpointKey());
+                metrics.clearPositionLag(jobId);
+            }
         }
-        finally
+    }
+
+    private void complete(
+        final UUID jobId,
+        final ReplayJobSnapshot queued,
+        final ReplayResult result)
+    {
+        final ReplayJobState state = result.verificationPassed() ?
+            ReplayJobState.VERIFIED : ReplayJobState.VERIFICATION_FAILED;
+        final ReplayFailure failure = result.verificationPassed() ?
+            null : ReplayFailure.verificationMismatch(
+                result.recordingId(),
+                result.replayStopPosition(),
+                result.replayStopPosition(),
+                result.expectedLastEventSequence(),
+                result.finalEventSequence(),
+                result.expectedReplayDigest(),
+                result.finalReplayDigest());
+        final ReplayJobSnapshot current = jobs.get(jobId);
+        final ReplayJobSnapshot terminal = new ReplayJobSnapshot(
+            jobId,
+            queued.command(),
+            state,
+            queued.acceptedAt(),
+            current.startedAt(),
+            clock.instant(),
+            current.progress(),
+            result,
+            failure);
+        jobs.put(jobId, terminal);
+        metrics.recordTerminal(
+            state.name().toLowerCase(),
+            elapsed(terminal),
+            result,
+            terminal.progress(),
+            failure);
+        if (result.verificationPassed())
         {
-            activeCheckpointKeys.remove(queued.command().checkpointKey());
+            LOGGER.info(
+                "REPLAY_VERIFIED jobId={} correlationId={} recordingId={} " +
+                    "replayStartPosition={} replayStopPosition={} finalEventSequence={} " +
+                    "finalReplayDigest={} durationMs={}",
+                jobId,
+                queued.command().correlationId(),
+                queued.command().recordingId(),
+                result.replayStartPosition(),
+                result.replayStopPosition(),
+                result.finalEventSequence(),
+                Long.toUnsignedString(result.finalReplayDigest()),
+                result.replayDurationMs());
         }
+        else
+        {
+            LOGGER.warn(
+                "REPLAY_VERIFICATION_FAILED jobId={} correlationId={} recordingId={} " +
+                    "expectedLastEventSequence={} actualLastEventSequence={} " +
+                    "expectedReplayDigest={} actualReplayDigest={}",
+                jobId,
+                queued.command().correlationId(),
+                queued.command().recordingId(),
+                result.expectedLastEventSequence(),
+                result.finalEventSequence(),
+                Long.toUnsignedString(result.expectedReplayDigest()),
+                Long.toUnsignedString(result.finalReplayDigest()));
+        }
+    }
+
+    private void fail(
+        final UUID jobId,
+        final ReplayJobSnapshot queued,
+        final RuntimeException ex)
+    {
+        final ReplayJobSnapshot current = jobs.get(jobId);
+        final ReplayFailure failure = failureFrom(
+            ex,
+            queued.command(),
+            current.progress());
+        final ReplayJobSnapshot terminal = new ReplayJobSnapshot(
+            jobId,
+            queued.command(),
+            ReplayJobState.FAILED,
+            queued.acceptedAt(),
+            current.startedAt(),
+            clock.instant(),
+            current.progress(),
+            null,
+            failure);
+        jobs.put(jobId, terminal);
+        metrics.recordTerminal(
+            ReplayJobState.FAILED.name().toLowerCase(),
+            elapsed(terminal),
+            null,
+            terminal.progress(),
+            failure);
+        LOGGER.error(
+            "REPLAY_FAILED jobId={} correlationId={} recordingId={} failureCode={} " +
+                "currentPosition={} lastEventSequence={} message={}",
+            jobId,
+            queued.command().correlationId(),
+            queued.command().recordingId(),
+            failure.code(),
+            failure.currentPosition(),
+            failure.lastAppliedEventSequence(),
+            failure.message(),
+            ex);
+    }
+
+    private void updateProgress(final UUID jobId, final ReplayProgress progress)
+    {
+        jobs.computeIfPresent(jobId, (ignored, current) ->
+        {
+            final ReplayProgress previous = current.progress();
+            if (previous == null && progress.lastEventSequence() > 0)
+            {
+                LOGGER.info(
+                    "REPLAY_RESUMED jobId={} correlationId={} recordingId={} " +
+                        "replayStartPosition={} lastEventSequence={}",
+                    jobId,
+                    current.command().correlationId(),
+                    current.command().recordingId(),
+                    progress.replayStartPosition(),
+                    progress.lastEventSequence());
+            }
+            if (previous != null &&
+                progress.lastCheckpointPosition() >
+                    previous.lastCheckpointPosition())
+            {
+                LOGGER.info(
+                    "REPLAY_CHECKPOINTED jobId={} correlationId={} recordingId={} " +
+                        "checkpointPosition={} lastEventSequence={} " +
+                        "appliedEventsThisRun={} duplicatesThisRun={}",
+                    jobId,
+                    current.command().correlationId(),
+                    current.command().recordingId(),
+                    progress.lastCheckpointPosition(),
+                    progress.lastEventSequence(),
+                    progress.appliedEventsThisRun(),
+                    progress.duplicatesThisRun());
+            }
+            if (progress.progressPercent() == 100.0 &&
+                (previous == null || previous.progressPercent() < 100.0))
+            {
+                LOGGER.info(
+                    "REPLAY_BOUNDARY_REACHED jobId={} correlationId={} recordingId={} " +
+                        "currentPosition={} replayStopPosition={} lastEventSequence={}",
+                    jobId,
+                    current.command().correlationId(),
+                    current.command().recordingId(),
+                    progress.currentPosition(),
+                    progress.replayStopPosition(),
+                    progress.lastEventSequence());
+            }
+            metrics.updatePositionLag(
+                jobId,
+                progress.replayStopPosition() - progress.currentPosition());
+            return current.withProgress(progress);
+        });
+    }
+
+    private void logAccepted(final ReplayJobSnapshot queued)
+    {
+        try (MDC.MDCCloseable ignoredJob = MDC.putCloseable(
+                "jobId",
+                queued.jobId().toString());
+            MDC.MDCCloseable ignoredCorrelation = MDC.putCloseable(
+                "correlationId",
+                nullToEmpty(queued.command().correlationId()));
+            MDC.MDCCloseable ignoredRecording = MDC.putCloseable(
+                "recordingId",
+                Long.toString(queued.command().recordingId())))
+        {
+            LOGGER.info(
+                "REPLAY_REQUEST_ACCEPTED jobId={} correlationId={} recordingId={} " +
+                    "checkpointKey={} requestedStopPosition={}",
+                queued.jobId(),
+                queued.command().correlationId(),
+                queued.command().recordingId(),
+                queued.command().checkpointKey(),
+                queued.command().stopPosition());
+        }
+    }
+
+    private static ReplayFailure failureFrom(
+        final RuntimeException ex,
+        final ReplayCommand command,
+        final ReplayProgress progress)
+    {
+        if (ex instanceof ReplayException replayException)
+        {
+            return replayException.failure();
+        }
+        final long currentPosition = progress == null ? 0 : progress.currentPosition();
+        final long replayStop = progress == null ?
+            (command.stopPosition() == null ? 0 : command.stopPosition()) :
+            progress.replayStopPosition();
+        final long lastSequence = progress == null ? 0 : progress.lastEventSequence();
+        return ReplayFailure.basic(
+                ReplayFailureCode.INTERNAL_ERROR,
+                safeMessage(ex))
+            .withReplayContext(
+                command.recordingId(),
+                currentPosition,
+                replayStop,
+                lastSequence);
+    }
+
+    private static Duration elapsed(final ReplayJobSnapshot snapshot)
+    {
+        return Duration.between(snapshot.startedAt(), snapshot.completedAt());
     }
 
     private static String safeMessage(final RuntimeException ex)
     {
         return ex.getMessage() == null || ex.getMessage().isBlank() ?
             ex.getClass().getSimpleName() : ex.getMessage();
+    }
+
+    private static String nullToEmpty(final String value)
+    {
+        return value == null ? "" : value;
     }
 }

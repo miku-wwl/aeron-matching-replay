@@ -9,12 +9,14 @@ import io.github.mikuwwl.matchingreplay.codec.generated.TradeCreatedDecoder;
 import io.github.mikuwwl.matchingreplay.domain.EventType;
 import io.github.mikuwwl.matchingreplay.domain.MatchingEvent;
 import io.github.mikuwwl.matchingreplay.domain.Side;
+import io.github.mikuwwl.matchingreplay.failure.ReplayFailureCode;
 import org.agrona.DirectBuffer;
 
 public final class MatchingEventSbeDispatcher
 {
     public static final int SCHEMA_ID = 100;
-    public static final int SCHEMA_VERSION = 1;
+    public static final int MINIMUM_SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
 
     private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
     private final OrderAcceptedDecoder acceptedDecoder = new OrderAcceptedDecoder();
@@ -32,16 +34,33 @@ public final class MatchingEventSbeDispatcher
         }
 
         headerDecoder.wrap(buffer, offset);
+        final int templateId = headerDecoder.templateId();
         final int schemaId = headerDecoder.schemaId();
         if (schemaId != SCHEMA_ID)
         {
-            throw new CodecException("Invalid SBE schemaId (protocol magic): " + schemaId);
+            throw new CodecException(
+                ReplayFailureCode.UNSUPPORTED_SCHEMA,
+                "Unsupported SBE schemaId=" + schemaId +
+                    ", expected=" + SCHEMA_ID +
+                    ", templateId=" + templateId +
+                    ", actingVersion=" + headerDecoder.version(),
+                templateId,
+                schemaId,
+                headerDecoder.version());
         }
 
         final int actingVersion = headerDecoder.version();
-        if (actingVersion != SCHEMA_VERSION)
+        if (actingVersion < MINIMUM_SCHEMA_VERSION || actingVersion > SCHEMA_VERSION)
         {
-            throw new CodecException("Unsupported SBE schema version: " + actingVersion);
+            throw new CodecException(
+                ReplayFailureCode.UNSUPPORTED_SCHEMA,
+                "Unsupported SBE actingVersion=" + actingVersion +
+                    ", supportedRange=[" + MINIMUM_SCHEMA_VERSION + ", " +
+                    SCHEMA_VERSION + "], templateId=" + templateId +
+                    ", schemaId=" + schemaId,
+                templateId,
+                schemaId,
+                actingVersion);
         }
 
         final int actingBlockLength = headerDecoder.blockLength();
@@ -62,7 +81,10 @@ public final class MatchingEventSbeDispatcher
                     decodeMatched(buffer, bodyOffset, actingBlockLength, actingVersion);
                 case TradeCreatedDecoder.TEMPLATE_ID ->
                     decodeTrade(buffer, bodyOffset, actingBlockLength, actingVersion);
-                default -> throw new UnknownTemplateException(headerDecoder.templateId());
+                default -> throw new UnknownTemplateException(
+                    templateId,
+                    schemaId,
+                    actingVersion);
             };
         }
         catch (final CodecException ex)
@@ -71,7 +93,15 @@ public final class MatchingEventSbeDispatcher
         }
         catch (final RuntimeException ex)
         {
-            throw new CodecException("Invalid SBE matching event", ex);
+            throw new CodecException(
+                ReplayFailureCode.SBE_DECODE_FAILED,
+                "Invalid SBE matching event: templateId=" + templateId +
+                    ", schemaId=" + schemaId +
+                    ", actingVersion=" + actingVersion,
+                templateId,
+                schemaId,
+                actingVersion,
+                ex);
         }
     }
 
@@ -94,7 +124,8 @@ public final class MatchingEventSbeDispatcher
             toDomain(acceptedDecoder.side()),
             acceptedDecoder.price(),
             acceptedDecoder.quantity(),
-            acceptedDecoder.remainingQuantity());
+            acceptedDecoder.remainingQuantity(),
+            acceptedDecoder.sourceId());
     }
 
     private MatchingEvent decodeMatched(
@@ -122,7 +153,8 @@ public final class MatchingEventSbeDispatcher
             toDomain(matchedDecoder.side()),
             matchedDecoder.price(),
             matchedDecoder.quantity(),
-            matchedDecoder.remainingQuantity());
+            matchedDecoder.remainingQuantity(),
+            matchedDecoder.sourceId());
     }
 
     private MatchingEvent decodeTrade(
@@ -144,7 +176,8 @@ public final class MatchingEventSbeDispatcher
             toDomain(tradeDecoder.takerSide()),
             tradeDecoder.price(),
             tradeDecoder.quantity(),
-            tradeDecoder.takerRemainingQuantity());
+            tradeDecoder.takerRemainingQuantity(),
+            tradeDecoder.sourceId());
     }
 
     private static Side toDomain(final SbeSide side)

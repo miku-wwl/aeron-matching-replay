@@ -20,9 +20,10 @@ matching-replay:
   checkpoint-directory: ${REPLAY_CHECKPOINT_DIR:./runtime/checkpoints}
   replay-channel: ${REPLAY_CHANNEL:aeron:ipc}
   replay-stream-id: ${REPLAY_STREAM_ID:1002}
-  timeout: ${REPLAY_TIMEOUT:20s}
+  no-progress-timeout: ${REPLAY_NO_PROGRESS_TIMEOUT:20s}
+  archive-request-timeout: ${ARCHIVE_REQUEST_TIMEOUT:20s}
   fragment-limit: ${REPLAY_FRAGMENT_LIMIT:20}
-  checkpoint-every: ${REPLAY_CHECKPOINT_EVERY:100}
+  checkpoint-every-processed-messages: ${REPLAY_CHECKPOINT_EVERY_PROCESSED_MESSAGES:100}
   worker-count: ${REPLAY_WORKER_COUNT:1}
   queue-capacity: ${REPLAY_QUEUE_CAPACITY:100}
   archive:

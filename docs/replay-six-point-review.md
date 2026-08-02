@@ -1,179 +1,207 @@
 # Aeron Replay 六项 Review 报告
 
 Review 日期：2026-08-02
-Review 范围：当前单体 Spring Boot `aeron-replay-service`、构建配置、测试和运维文档。
+Review 范围：当前单体 Spring Boot `aeron-replay-service`、Maven 构建、真实
+Aeron Archive 集成测试、Checkpoint/Completion Proof、API 与运维文档。
 
-## 结论
+## 总结
 
 | # | Review 项 | 结果 |
 |---:|---|---|
 | 1 | SBE 由 Maven `generate-sources` 生成 | PASS |
 | 2 | Replay 调用真实 Aeron Archive API | PASS |
 | 3 | Checkpoint 保存完全处理后的 `Header.position()` | PASS |
-| 4 | `eventSequence` 与 Aeron Position 分离 | PASS |
-| 5 | 重复事件的业务应用幂等 | PASS |
-| 6 | 崩溃恢复 Hash 等于 uninterrupted run | PASS |
+| 4 | `eventSequence` 与 Aeron Position 彻底分离 | PASS |
+| 5 | Consumer 对重复事件幂等 | PASS |
+| 6 | 崩溃恢复 Replay Digest 等于 uninterrupted run | PASS |
 
-验证命令：
+最终验证命令：
 
 ```powershell
 .\mvnw.cmd -ntp clean verify
+.\scripts\demo-replay.ps1
 ```
 
-验证结果：15 个测试全部通过，0 failure、0 error、0 skipped。测试包含真实
-`ArchivingMediaDriver`、实际 Archive Recording/Replay，以及子 JVM 硬终止后的恢复。
+测试覆盖真实 `ArchivingMediaDriver`、Archive Recording/Replay、bounded
+replay、duplicate、gap、无效/未来 SBE、verification mismatch、无进展超时，
+以及子 JVM `Runtime.halt(77)` 后恢复。
 
-## 1. SBE 必须由 Maven generate-sources 生成
+## 1. SBE 确实由 Maven generate-sources 生成
 
 结果：PASS。
 
 证据：
 
-- [`pom.xml`](../pom.xml) 中 `exec-maven-plugin` 的
-  `generate-sbe-codecs` execution 绑定在 `generate-sources` 阶段，调用
-  `uk.co.real_logic.sbe.SbeTool`。
-- Schema 唯一来源是
-  [`matching-events.xml`](../src/main/resources/sbe/matching-events.xml)，输出目录是
-  `target/generated-sources/sbe`。
-- `build-helper-maven-plugin` 在同一生命周期把生成目录加入编译源路径。
-- 生产适配器
-  [`MatchingEventSbeEncoder`](../src/main/java/io/github/mikuwwl/matchingreplay/codec/MatchingEventSbeEncoder.java)
-  和
-  [`MatchingEventSbeDispatcher`](../src/main/java/io/github/mikuwwl/matchingreplay/codec/MatchingEventSbeDispatcher.java)
-  直接引用 `codec.generated` 下的类型；仓库没有手写或提交这些生成类。
-- `clean verify` 会先删除 `target`，随后仍能生成、编译并通过
-  [`MatchingEventSbeCodecTest`](../src/test/java/io/github/mikuwwl/matchingreplay/codec/MatchingEventSbeCodecTest.java)。
+- [`pom.xml`](../pom.xml) 的 `generate-sbe-codecs` execution 绑定
+  `generate-sources`，调用官方 `uk.co.real_logic.sbe.SbeTool`。
+- Schema 单一来源为
+  [`matching-events.xml`](../src/main/resources/sbe/matching-events.xml)，输出仅在
+  `target/generated-sources/sbe`；仓库不提交生成的 codec。
+- `build-helper-maven-plugin` 把该目录加入编译源路径。
+- 生产适配器 `MatchingEventSbeEncoder`、`MatchingEventSbeDispatcher` 直接引用
+  `codec.generated` 类型，没有手写 offset/序列化替代品。
+- `clean verify` 先删除 `target`，仍能重新生成、编译并通过 codec 测试。因此
+  `target` 可安全删除，decode/encode 类会在下一次 Maven 构建生成。
+- 当前 v2 decoder 能读取 v1（新增 `sourceId` 缺省为 0）和 v2，未来 acting
+  version 返回结构化 `UNSUPPORTED_SCHEMA`。
 
-判定：业务代码没有手写字段 Offset，也没有以手写序列化替代 SBE Tool。
+相关测试：
 
-## 2. Replay 必须调用真实 Aeron Archive API
+```text
+v2DecoderReplaysV1Recording
+v2DecoderReplaysV2Recording
+futureSchemaVersionFailsClearly
+```
+
+## 2. Replay 确实调用 Aeron Archive API
 
 结果：PASS。
 
 证据：
 
 - [`AeronReplayCoordinator`](../src/main/java/io/github/mikuwwl/matchingreplay/aeron/AeronReplayCoordinator.java)
-  通过 `AeronArchive.getStartPosition`、`getRecordingPosition`/`getStopPosition`、
-  `startReplay` 和 `stopReplay` 完成有界回放。
-- Replay 数据由带 replay session id 的真实 Aeron `Subscription` 轮询，不读取
-  Archive segment 文件，也没有文件读取模拟器。
-- [`EmbeddedArchiveFixture`](../src/test/java/io/github/mikuwwl/matchingreplay/support/EmbeddedArchiveFixture.java)
-  只存在于测试代码，实际启动 `ArchivingMediaDriver`、调用
-  `AeronArchive.startRecording` 并通过 `ExclusivePublication` 写入 SBE 消息。
-- [`AeronReplayCoordinatorIntegrationTest`](../src/test/java/io/github/mikuwwl/matchingreplay/aeron/AeronReplayCoordinatorIntegrationTest.java)
-  对这份真实 Recording 执行 Archive Replay。
+  调用 `getStartPosition`、`getRecordingPosition`/`getStopPosition`、
+  `startReplay`、`stopReplay`。
+- 数据来自绑定 replay session id 的真实 Aeron `Subscription`；生产路径没有
+  Archive segment 文件读取器，也没有文件模拟 replay。
+- 测试夹具实际启动 `ArchivingMediaDriver`，通过
+  `AeronArchive.startRecording` 和 `ExclusivePublication` 录制 SBE，再调用相同
+  Coordinator 回放。
+- 生产 JAR 不启动内置 Archive；嵌入式 Archive 只在测试/一键演示中存在。
 
-判定：生产路径和集成测试都使用 Aeron Archive API；生产 JAR 不启动测试 Archive。
+`boundedReplayStopsAtCapturedPosition` 还证明 stop Position 被一次性捕获，边界后
+追加的消息不会被本次 replay 消费。
 
-## 3. Checkpoint 必须保存完全处理后的 Header.position()
-
-结果：PASS。
-
-证据：
-
-- [`ReplayFragmentHandler`](../src/main/java/io/github/mikuwwl/matchingreplay/aeron/ReplayFragmentHandler.java)
-  的顺序是：SBE decode → `ProjectionState.apply(event, header.position())` → 周期性
-  Checkpoint。解码或业务应用失败时，不会推进或保存该消息的位置。
-- 保存的是 Aeron `Header.position()` 所表示的已消费消息结束 Position，不是
-  fragment 起始 offset。
-- 崩溃测试记录了每次成功 `publication.offer(...)` 返回的消息结束 Position。在
-  event 400 后，父进程断言子进程保存的 `lastAppliedAeronPosition` 与该 Position
-  精确相等；同时恢复后的首条业务事件严格为 401。
-- [`AtomicPropertiesFile`](../src/main/java/io/github/mikuwwl/matchingreplay/checkpoint/AtomicPropertiesFile.java)
-  先 `force(true)` 临时文件，再要求 `ATOMIC_MOVE` 替换。文件系统不支持原子移动时
-  直接失败，不再静默使用非原子覆盖。
-
-边界：这里证明的是受支持文件系统上的进程崩溃恢复原子性，不声称父目录已
-`fsync`、设备已满足任意断电模型或 Checkpoint 已复制。
-
-## 4. eventSequence 与 Aeron Position 必须彻底分离
+## 3. Checkpoint 保存的是完整处理后的 Header.position()
 
 结果：PASS。
 
-证据：
+关键执行顺序：
 
-- [`Checkpoint`](../src/main/java/io/github/mikuwwl/matchingreplay/checkpoint/Checkpoint.java)
-  分别保存 `lastAppliedEventSequence` 和 `lastAppliedAeronPosition`。
-- `eventSequence` 只用于业务连续性、gap 和 duplicate 判断；Archive
-  `startReplay` 只使用 Aeron Position。
-- API 也分别暴露 `expectedLastEventSequence`、`stopPosition` 和
-  `replayStartPosition`/`replayStopPosition`。
-- 崩溃测试明确断言 event 400 的 Aeron Position 不等于数值 400，并使用前者恢复、
-  后者验证业务顺序。
+```text
+完整 Aeron fragment
+  → SBE decode
+  → sequence 验证
+  → apply 或幂等判重
+  → ProjectionState 接收 Header.position()
+  → 发布进度
+  → 按 processed-message cadence 原子写 Checkpoint
+```
 
-判定：代码中没有把业务序列当成 Archive byte Position，也没有反向替代。
-
-## 5. Consumer 对重复事件必须幂等
-
-结果：PASS（当前内置 Projection 范围）。
+这里的 `Header.position()` 是已处理消息的结束 Position，不是 fragment 开始
+offset。decode、schema 或 sequence 失败会在推进 Position 前终止。
 
 证据：
 
-- [`ProjectionState`](../src/main/java/io/github/mikuwwl/matchingreplay/projection/ProjectionState.java)
-  对 `eventSequence <= lastAppliedEventSequence` 返回 `DUPLICATE`：不重复混入
-  state hash、不增加 applied count、不改变最终业务序列，但记录 duplicate count，
-  并把 Aeron Position 推进到这条已经判定完成的消息结束位置。
-- [`ProjectionStateTest`](../src/test/java/io/github/mikuwwl/matchingreplay/projection/ProjectionStateTest.java)
-  对同一事件应用两次，验证 Hash、业务序列和 applied count 均保持不变。
+- `gapLeavesCheckpointAtLastGoodMessage`：gap 后 Checkpoint 仍是上一条有效事件。
+- `invalidSbeDoesNotAdvanceCheckpoint`：无效 SBE 不会被当成已消费。
+- 硬崩溃测试精确断言 sequence 400 的 Checkpoint Position 等于第 400 次成功
+  `publication.offer` 返回的消息结束 Position；恢复首条为 401。
+- Checkpoint 临时文件先 `force(true)`，再要求同文件系统 `ATOMIC_MOVE`。不支持时
+  返回 `CHECKPOINT_WRITE_FAILED`，不会退化成非原子覆盖。
 
-生产接入边界：若把内置 Projection 换成数据库写入或调用外部服务，业务效果、
-dedup/Inbox 和 Checkpoint 必须组成同一个事务性恢复单元；仅靠本地 Checkpoint
-文件不能让一个无事务的外部副作用自动幂等。
+该结论证明支持原子移动文件系统上的进程崩溃恢复，不等于父目录已 `fsync`、设备
+完成断电安全刷盘或状态已复制。
 
-## 6. 崩溃恢复后 Projection Hash 必须等于 uninterrupted run
+## 4. eventSequence 与 Aeron Position 完全分离
 
 结果：PASS。
 
-测试路径：
+| 字段 | 含义 | 作用 |
+|---|---|---|
+| `lastAppliedEventSequence` | 业务顺序 | duplicate/gap 与最终业务校验 |
+| `lastAppliedAeronPosition` | Archive 字节流进度 | 恢复时 `startReplay` 起点 |
+| `replayStopPosition` | 有界回放终点 | 控制本次 replay 范围 |
+
+`Checkpoint` 分别持久化 sequence 和 Position；API 分别表达
+`expectedLastEventSequence` 与 `stopPosition`。测试还断言 sequence 400 的
+Position 数值不等于 400，防止两个概念被意外混用。
+
+## 5. 重复事件处理幂等
+
+结果：PASS（针对当前 reference projection）。
+
+`eventSequence <= lastAppliedEventSequence` 时：
+
+- 不重复执行 apply；
+- 不更新 `replayDigest`；
+- 不增加 `appliedEventsThisRun/Total`；
+- 增加 `duplicatesThisRun/Total`；
+- 在消息已被成功判重后推进 Aeron Position。
+
+`duplicateDoesNotChangeReplayDigest` 在真实 Archive replay 中验证上述行为，并验证
+duplicate 也计入 `checkpointEveryProcessedMessages`，因为它的 Position 仍须持久化。
+
+若将内存 Projection 换成数据库或远程调用，业务效果、Inbox/dedup 记录和
+Checkpoint 必须形成同一事务恢复单元；本地原子文件不能自动保证外部副作用幂等。
+
+## 6. 崩溃恢复后的 Replay Digest 与 uninterrupted run 一致
+
+结果：PASS。
+
+完整证明链：
 
 1. 在真实 Archive 中录制 1,000 个确定性 SBE 事件。
-2. 用独立 checkpoint key 完整回放 1..1000，得到 uninterrupted reference hash。
-3. 启动独立子 JVM，命令目标仍是完整的 1..1000；在处理中间 event 400 的周期
-   Checkpoint 完成后，从 Checkpoint repository 内立即调用
-   `Runtime.getRuntime().halt(77)`，不等待 Replay 完成，也不执行正常 shutdown
-   hooks。
-5. 父进程读取 Checkpoint，验证 sequence=400、Position=第 400 条消息结束 Position、
-   Hash=前 400 条 reference hash。
-6. 创建全新的 Archive client factory、Checkpoint repository 和 Coordinator，
-   从保存 Position 恢复；首条恢复事件为 401，末条为 1000。
-7. 断言恢复结果无 gap，最终 Hash 同时等于真实 uninterrupted replay hash 和
-   全量事件 reference hash。
+2. 完整回放 1..1000，得到 uninterrupted replay digest。
+3. 独立子 JVM 回放同一 recording，在 sequence 400 的 Checkpoint 成功后立即
+   `Runtime.halt(77)`；不执行 shutdown hook。
+4. 父进程验证 Checkpoint 为 sequence 400、对应消息结束 Position 和前 400 条
+   digest，并确认没有 Completion Proof。
+5. 用全新的 Archive client、Checkpoint repository、Coordinator 模拟服务重启。
+6. 从保存 Position 开始，第一条新 apply 的 sequence 必须为 401。
+7. 最终 sequence=1000、`appliedEventsTotal=1000`、duplicate=0、gap=0。
+8. resumed digest 同时等于 uninterrupted digest 和请求期望值；随后才生成
+   `VERIFIED` Completion Proof。
 
-实现见
-[`AeronReplayCoordinatorIntegrationTest`](../src/test/java/io/github/mikuwwl/matchingreplay/aeron/AeronReplayCoordinatorIntegrationTest.java)
-与测试子进程
-[`CrashReplayProcessMain`](../src/test/java/io/github/mikuwwl/matchingreplay/support/CrashReplayProcessMain.java)。
+一键证明：
 
-## Archive 耐久性取舍
+```powershell
+.\scripts\demo-replay.ps1
+```
 
-本项目严格区分四层状态：
+## Digest 定义与 Completion Proof
 
-| 层级 | 含义 |
+`replayDigest` 是可恢复的 rolling FNV-64 事件流摘要，不宣称为 OrderBook 或完整
+数据库状态 hash。固定字段顺序为：
+
+```text
+eventSequence, eventType, orderId, contraOrderId, tradeId,
+symbolId, side, price, quantity, remainingQuantity
+```
+
+timestamp、schema version、v2 `sourceId`、Aeron transport metadata 不参与摘要。
+
+Progress Checkpoint 与 Completion Proof 已分离：
+
+- Checkpoint 表示“截至某个 Aeron Position 已完整处理”，用于崩溃恢复；
+- Completion Proof 表示“有界 replay 到达终点且 sequence/digest 均通过校验”；
+- mismatch 保留合法进度，但不创建或覆盖已存在 Proof。
+
+`verificationMismatchDoesNotCreateOrOverwriteCompletionProof` 对此做了真实 Archive
+集成验证。
+
+## Archive 耐久性工程取舍
+
+本项目严格区分：
+
+| 层级 | 能证明什么 |
 |---|---|
-| Publication accepted | `offer` 成功并取得 stream Position |
-| Archive recorded/available | `recordingPosition` 已达到该 Position |
-| Device durable | 文件和元数据满足选定的存储/断电保证 |
-| Replicated or committed | 复制、Cluster Log 或其他策略已经确认 |
+| Publication accepted | Aeron 接受并分配 stream Position |
+| Archive recorded/available | `recordingPosition` 达到该 Position |
+| Device durable | 存储满足选定的断电模型 |
+| Replicated/cluster committed | 额外复制或一致性策略完成 |
 
-测试夹具等待 `recordingPosition >= publishedPosition`，是为了消除测试竞态并证明
-MVP 的可恢复性；它会增加等待延迟，不能写成 OKX 生产系统的确定做法，也不能自动
-提升为设备持久化或复制提交。生产系统可能按需求选择异步 Archive、Archive
-replication、Aeron Cluster Log 或其他 journal；本仓库不声称 OKX 实际使用其中
-任何一种方案。
+测试等待 `recordingPosition >= publishedPosition` 是为了消除竞态，适合 MVP
+可靠性证明但会增加延迟。它不能表述成 OKX 生产系统做法，也不自动等于设备持久化。
+生产可按延迟和丢失预算选择异步录制、Archive replication、Aeron Cluster Log 或
+其他 journal；本仓库不声称 OKX 实际采用哪一种。
 
-## OrderBook 职责边界
+## OrderBook 与项目边界
 
-当前 Spring Boot 生产代码不包含 OrderBook，也不会在 Replay 时重新撮合。服务只
-读取已经发生的 Matching Events 并恢复下游 Projection。
+当前生产项目只有 replay 服务，不包含 OrderBook、不重新撮合、不重放 command
+进入 matching logic。历史文档中的最小 OrderBook 只是早期演示事件生成方案，不
+代表作者在 OKX 负责 OrderBook。该文档已移到
+[`docs/legacy`](legacy/original-mvp-guide.md)，不再属于主要阅读路径。
 
-历史指南中的最小内存 OrderBook 仅用于生成真实、确定性的演示事件，属于复现工程
-设计；它不代表作者当年负责 OrderBook，也不代表 OKX 私有实现。历史指南已增加
-醒目标记，并明确以当前单服务架构和本报告为准。
-
-## 仍需由生产接入方决定的事项
-
-- 实际外部 Projection 的事务、Inbox/dedup 和 Checkpoint 原子边界。
-- Archive segment、Catalog、Checkpoint 所在存储的断电与备份策略。
-- 是否采用 Archive replication、Aeron Cluster 或其他耐久性/高可用机制。
-- HTTP job 状态目前是进程内运维状态；服务重启后保留的是 Checkpoint，不是旧
-  job 历史。
+仍需生产接入方决定：外部 Projection 的事务边界、Archive/Catalog/Checkpoint 的
+存储保证、复制/Cluster 策略，以及 HTTP job 历史的持久化需求。

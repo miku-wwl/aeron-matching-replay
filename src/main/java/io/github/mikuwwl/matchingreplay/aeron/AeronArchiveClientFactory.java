@@ -39,7 +39,7 @@ public class AeronArchiveClientFactory
                 .controlRequestChannel(archive.getControlRequestChannel())
                 .controlRequestStreamId(archive.getControlRequestStreamId())
                 .controlResponseChannel(archive.getControlResponseChannel())
-                .messageTimeoutNs(properties.getTimeout().toNanos())
+                .messageTimeoutNs(properties.getArchiveRequestTimeout().toNanos())
                 .errorHandler(ex -> LOGGER.error("Aeron Archive client failure: client={}", clientName, ex)));
     }
 }

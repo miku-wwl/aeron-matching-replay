@@ -1,8 +1,9 @@
-# REST API
+# Replay API
 
-Base path: `/api/v1/replays`
+The API creates asynchronous, bounded replay jobs. Job history is in memory;
+progress checkpoints and completion proofs survive service restarts.
 
-## Start replay
+## Start a replay
 
 ```http
 POST /api/v1/replays
@@ -13,102 +14,175 @@ Content-Type: application/json
   "checkpointKey": "orders-projection",
   "stopPosition": 1349472,
   "expectedLastEventSequence": 12425,
-  "expectedStateHash": "18013645834701933210",
-  "correlationId": "incident-20260802"
+  "expectedReplayDigest": "18013645834701933210",
+  "correlationId": "recovery-2026-08-02"
 }
 ```
 
-Response: `202 Accepted`
+| Field | Required | Meaning |
+|---|---:|---|
+| `recordingId` | yes | Aeron Archive recording identifier |
+| `checkpointKey` | no | Projection/recovery identity; defaults to `default` |
+| `stopPosition` | no | Bounded end Position; current available Position is captured once when omitted |
+| `expectedLastEventSequence` | yes | Mandatory final business sequence expectation |
+| `expectedReplayDigest` | yes | Mandatory unsigned 64-bit digest, represented as a decimal string |
+| `correlationId` | no | Caller correlation value, at most 128 characters |
+
+The response is `202 Accepted`, contains a generated `jobId`, and has a
+`Location` header for the job resource. Only one active job may use a
+`checkpointKey`; a conflict returns HTTP 409.
+
+PowerShell:
+
+```powershell
+.\scripts\start-replay.ps1 `
+  -RecordingId 42 `
+  -CheckpointKey orders-projection `
+  -StopPosition 1349472 `
+  -ExpectedLastEventSequence 12425 `
+  -ExpectedReplayDigest 18013645834701933210 `
+  -CorrelationId recovery-2026-08-02
+```
+
+## Inspect jobs
+
+```http
+GET /api/v1/replays/{jobId}
+GET /api/v1/replays
+```
+
+States are:
+
+- `QUEUED`: accepted but not yet executing.
+- `RUNNING`: Archive replay is active.
+- `VERIFIED`: the bounded replay completed and both expectations matched.
+- `VERIFICATION_FAILED`: the boundary was reached, but an expectation differed.
+- `FAILED`: execution stopped because of a structured replay failure.
+
+Example running response:
 
 ```json
 {
-  "jobId": "844aa1ef-8c6f-4b49-b5f3-99450dc39a53",
-  "state": "QUEUED",
+  "jobId": "e97a6293-9a21-4954-a657-f407ca271b40",
+  "state": "RUNNING",
   "command": {
     "recordingId": 42,
     "checkpointKey": "orders-projection",
     "stopPosition": 1349472,
     "expectedLastEventSequence": 12425,
-    "expectedStateHash": "18013645834701933210",
-    "correlationId": "incident-20260802"
+    "expectedReplayDigest": "18013645834701933210",
+    "correlationId": "recovery-2026-08-02"
   },
-  "acceptedAt": "2026-08-02T00:00:00Z",
-  "startedAt": null,
-  "completedAt": null,
+  "progress": {
+    "replayStartPosition": 434080,
+    "currentPosition": 830400,
+    "replayStopPosition": 1349472,
+    "progressPercent": 43.3,
+    "lastEventSequence": 7821,
+    "appliedEventsThisRun": 3821,
+    "duplicatesThisRun": 0,
+    "lastCheckpointPosition": 811200,
+    "eventsPerSecond": 184200,
+    "lastProgressAt": "2026-08-02T00:00:00Z"
+  },
   "result": null,
-  "error": null
+  "failure": null
 }
 ```
 
-Fields:
+`currentPosition` is monotonic and bounded by `replayStopPosition`.
+`lastCheckpointPosition` advances only after a successful atomic checkpoint
+write. Progress reaches 100% at the requested boundary.
 
-| Field | Required | Meaning |
-|---|---:|---|
-| `recordingId` | yes | Exact Aeron Archive recording |
-| `checkpointKey` | no | Durable state key; defaults to `default` |
-| `stopPosition` | no | Exclusive Aeron end Position for the bounded replay; defaults to the available position captured at job start |
-| `expectedLastEventSequence` | yes | Expected business sequence at completion; cannot be omitted |
-| `expectedStateHash` | yes | Expected unsigned 64-bit hash as a decimal string; cannot be omitted |
-| `correlationId` | no | Caller trace or incident identifier |
-
-`checkpointKey` must match `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`.
-
-## Get one replay
-
-```http
-GET /api/v1/replays/{jobId}
-```
-
-Terminal job states:
-
-- `SUCCEEDED`: replay completed and both mandatory expectations matched.
-- `VERIFICATION_FAILED`: replay completed, but the sequence or hash did not
-  match.
-- `FAILED`: Archive access, decoding, gap detection, timeout, or persistence
-  failed.
-
-Successful result:
+Example verified result:
 
 ```json
 {
-  "state": "SUCCEEDED",
+  "state": "VERIFIED",
   "result": {
     "recordingId": 42,
     "checkpointKey": "orders-projection",
     "replayStartPosition": 434080,
     "replayStopPosition": 1349472,
-    "firstRecoveredSequence": 4001,
-    "lastRecoveredSequence": 12425,
-    "finalSequence": 12425,
-    "appliedEvents": 12425,
-    "gaps": 0,
-    "duplicates": 0,
-    "stateHash": "18013645834701933210",
-    "replayDurationMs": 142,
+    "firstAppliedEventSequenceThisRun": 4001,
+    "lastAppliedEventSequenceThisRun": 12425,
+    "finalEventSequence": 12425,
+    "expectedLastEventSequence": 12425,
+    "appliedEventsThisRun": 8425,
+    "appliedEventsTotal": 12425,
+    "duplicatesThisRun": 0,
+    "duplicatesTotal": 2,
+    "sequenceGapsThisRun": 0,
+    "finalReplayDigest": "18013645834701933210",
+    "expectedReplayDigest": "18013645834701933210",
+    "replayDurationMs": 87,
     "verificationPassed": true
+  },
+  "failure": null
+}
+```
+
+## Failure response
+
+Expected replay failures expose a stable `failure.code` and nullable diagnostic
+fields:
+
+```json
+{
+  "state": "FAILED",
+  "progress": {
+    "currentPosition": 434080,
+    "replayStopPosition": 1349472,
+    "lastEventSequence": 400
+  },
+  "result": null,
+  "failure": {
+    "code": "SEQUENCE_GAP",
+    "message": "Expected sequence 401 but received 403",
+    "recordingId": 42,
+    "currentPosition": 434080,
+    "replayStopPosition": 1349472,
+    "lastAppliedEventSequence": 400,
+    "receivedEventSequence": 403
   }
 }
 ```
 
-The hash is always a string so JavaScript clients do not lose 64-bit precision.
+Supported failure codes:
 
-## List in-memory job status
-
-```http
-GET /api/v1/replays
+```text
+RECORDING_NOT_FOUND
+INVALID_REPLAY_RANGE
+CHECKPOINT_NOT_FOUND
+CHECKPOINT_RECORDING_MISMATCH
+CHECKPOINT_CORRUPTED
+SBE_DECODE_FAILED
+UNSUPPORTED_SCHEMA
+SEQUENCE_GAP
+NO_PROGRESS_TIMEOUT
+MAXIMUM_REPLAY_DURATION
+CHECKPOINT_WRITE_FAILED
+COMPLETION_PROOF_WRITE_FAILED
+VERIFICATION_MISMATCH
+REPLAY_IMAGE_UNAVAILABLE
+INTERNAL_ERROR
 ```
 
-Job status is process-local operational state. Durable recovery state is the
-checkpoint file. A service restart loses old HTTP job records but does not lose
-the replay resume position.
+Codec failures populate `templateId`, `schemaId`, and `actingVersion` when
+available. No-progress failures provide `currentPosition`,
+`replayStopPosition`, `lastAppliedEventSequence`, and `noProgressMillis`.
+Verification failures expose expected and actual sequences and unsigned
+digests.
 
-## Errors
+## Counter semantics
 
-Errors use RFC 9457 `application/problem+json`.
+- `appliedEventsThisRun`: newly applied business events during this process run.
+- `appliedEventsTotal`: cumulative applied count loaded from and saved to the
+  progress checkpoint.
+- `duplicatesThisRun`: duplicates suppressed during this run.
+- `duplicatesTotal`: cumulative duplicate count.
+- `sequenceGapsThisRun`: gaps observed during this run; a gap terminates the
+  replay immediately.
 
-| HTTP status | Cause |
-|---:|---|
-| 400 | Invalid command or unsigned hash |
-| 404 | Unknown job ID |
-| 409 | The same `checkpointKey` already has an active job |
-| 503 | Replay worker queue is full |
+Duplicates count as processed messages for checkpoint cadence because their
+Aeron Positions still have to become recoverable.

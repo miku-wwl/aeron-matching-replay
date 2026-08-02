@@ -1,6 +1,6 @@
 package io.github.mikuwwl.matchingreplay.checkpoint;
 
-import io.github.mikuwwl.matchingreplay.domain.Hashing;
+import io.github.mikuwwl.matchingreplay.domain.ReplayDigest;
 
 import java.time.Instant;
 import java.util.Properties;
@@ -10,17 +10,16 @@ public record Checkpoint(
     long recordingId,
     long lastAppliedEventSequence,
     long lastAppliedAeronPosition,
-    long appliedEventCount,
-    long duplicateEventCount,
-    long gapCount,
-    long stateHash,
+    long appliedEventsTotal,
+    long duplicatesTotal,
+    long replayDigest,
     Instant updatedAt)
 {
     public Checkpoint
     {
         if (checkpointKey == null || checkpointKey.isBlank() || recordingId < 0 ||
             lastAppliedEventSequence < 0 || lastAppliedAeronPosition < 0 ||
-            appliedEventCount < 0 || duplicateEventCount < 0 || gapCount < 0 ||
+            appliedEventsTotal < 0 || duplicatesTotal < 0 ||
             updatedAt == null)
         {
             throw new IllegalArgumentException("Invalid replay checkpoint");
@@ -39,8 +38,7 @@ public record Checkpoint(
             recordingStartPosition,
             0,
             0,
-            0,
-            Hashing.FNV_OFFSET_BASIS,
+            ReplayDigest.INITIAL_VALUE,
             Instant.now());
     }
 
@@ -51,10 +49,9 @@ public record Checkpoint(
         properties.setProperty("recordingId", Long.toString(recordingId));
         properties.setProperty("lastAppliedEventSequence", Long.toString(lastAppliedEventSequence));
         properties.setProperty("lastAppliedAeronPosition", Long.toString(lastAppliedAeronPosition));
-        properties.setProperty("appliedEventCount", Long.toString(appliedEventCount));
-        properties.setProperty("duplicateEventCount", Long.toString(duplicateEventCount));
-        properties.setProperty("gapCount", Long.toString(gapCount));
-        properties.setProperty("stateHash", Long.toUnsignedString(stateHash));
+        properties.setProperty("appliedEventsTotal", Long.toString(appliedEventsTotal));
+        properties.setProperty("duplicatesTotal", Long.toString(duplicatesTotal));
+        properties.setProperty("replayDigest", Long.toUnsignedString(replayDigest));
         properties.setProperty("updatedAt", updatedAt.toString());
         return properties;
     }
@@ -68,15 +65,33 @@ public record Checkpoint(
                 Long.parseLong(AtomicPropertiesFile.require(properties, "recordingId")),
                 Long.parseLong(AtomicPropertiesFile.require(properties, "lastAppliedEventSequence")),
                 Long.parseLong(AtomicPropertiesFile.require(properties, "lastAppliedAeronPosition")),
-                Long.parseLong(AtomicPropertiesFile.require(properties, "appliedEventCount")),
-                Long.parseLong(AtomicPropertiesFile.require(properties, "duplicateEventCount")),
-                Long.parseLong(AtomicPropertiesFile.require(properties, "gapCount")),
-                Long.parseUnsignedLong(AtomicPropertiesFile.require(properties, "stateHash")),
+                Long.parseLong(requireCurrentOrLegacy(
+                    properties,
+                    "appliedEventsTotal",
+                    "appliedEventCount")),
+                Long.parseLong(requireCurrentOrLegacy(
+                    properties,
+                    "duplicatesTotal",
+                    "duplicateEventCount")),
+                Long.parseUnsignedLong(requireCurrentOrLegacy(
+                    properties,
+                    "replayDigest",
+                    "stateHash")),
                 Instant.parse(AtomicPropertiesFile.require(properties, "updatedAt")));
         }
         catch (final RuntimeException ex)
         {
             throw new IllegalStateException("Corrupt replay checkpoint", ex);
         }
+    }
+
+    private static String requireCurrentOrLegacy(
+        final Properties properties,
+        final String currentKey,
+        final String legacyKey)
+    {
+        final String currentValue = properties.getProperty(currentKey);
+        return currentValue == null || currentValue.isBlank() ?
+            AtomicPropertiesFile.require(properties, legacyKey) : currentValue;
     }
 }

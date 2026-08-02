@@ -2,6 +2,8 @@ package io.github.mikuwwl.matchingreplay.aeron;
 
 import io.github.mikuwwl.matchingreplay.checkpoint.CheckpointRepository;
 import io.github.mikuwwl.matchingreplay.checkpoint.Checkpoint;
+import io.github.mikuwwl.matchingreplay.checkpoint.CompletionProof;
+import io.github.mikuwwl.matchingreplay.checkpoint.CompletionProofRepository;
 import io.github.mikuwwl.matchingreplay.config.ReplayProperties;
 import io.github.mikuwwl.matchingreplay.domain.EventType;
 import io.github.mikuwwl.matchingreplay.domain.MatchingEvent;
@@ -27,7 +29,7 @@ class AeronReplayCoordinatorIntegrationTest
     Path tempDirectory;
 
     @Test
-    void hardCrashAfterCheckpointResumesAtNextEventAndMatchesUninterruptedHash()
+    void hardCrashResumesFromLastPersistedAeronPosition()
         throws Exception
     {
         try (EmbeddedArchiveFixture upstream =
@@ -39,7 +41,7 @@ class AeronReplayCoordinatorIntegrationTest
             final EmbeddedArchiveFixture.Recording recording = upstream.record(events);
             final long crashSequence = 400;
             final long crashPosition = recording.positionAfterSequence(crashSequence);
-            final long crashHash = recording.hashAfterSequence(crashSequence);
+            final long crashDigest = recording.digestAfterSequence(crashSequence);
             assertNotEquals(
                 crashSequence,
                 crashPosition,
@@ -57,7 +59,7 @@ class AeronReplayCoordinatorIntegrationTest
                 "uninterrupted-projection",
                 recording.stopPosition(),
                 recording.eventCount(),
-                recording.expectedStateHash(),
+                recording.expectedReplayDigest(),
                 "uninterrupted-run"));
             assertTrue(uninterrupted.verificationPassed());
 
@@ -85,7 +87,9 @@ class AeronReplayCoordinatorIntegrationTest
             final Checkpoint crashCheckpoint = checkpointReader.find(checkpointKey).orElseThrow();
             assertEquals(crashSequence, crashCheckpoint.lastAppliedEventSequence());
             assertEquals(crashPosition, crashCheckpoint.lastAppliedAeronPosition());
-            assertEquals(crashHash, crashCheckpoint.stateHash());
+            assertEquals(crashDigest, crashCheckpoint.replayDigest());
+            final CompletionProofRepository proofs = new CompletionProofRepository(properties);
+            assertTrue(proofs.find(checkpointKey).isEmpty());
 
             // Fresh client factory, repository and coordinator model a service process restart.
             final AeronReplayCoordinator restartedCoordinator = new AeronReplayCoordinator(
@@ -97,16 +101,29 @@ class AeronReplayCoordinatorIntegrationTest
                 checkpointKey,
                 recording.stopPosition(),
                 recording.eventCount(),
-                recording.expectedStateHash(),
+                recording.expectedReplayDigest(),
                 "post-crash-resume"));
             assertTrue(resumed.verificationPassed());
             assertEquals(crashPosition, resumed.replayStartPosition());
-            assertEquals(crashSequence + 1, resumed.firstRecoveredSequence());
-            assertEquals(1_000, resumed.lastRecoveredSequence());
-            assertEquals(1_000, resumed.finalSequence());
-            assertEquals(0, resumed.gaps());
-            assertEquals(uninterrupted.stateHash(), resumed.stateHash());
-            assertEquals(recording.expectedStateHash(), resumed.stateHash());
+            assertEquals(crashSequence + 1, resumed.firstAppliedEventSequenceThisRun());
+            assertEquals(1_000, resumed.lastAppliedEventSequenceThisRun());
+            assertEquals(1_000, resumed.finalEventSequence());
+            assertEquals(0, resumed.sequenceGapsThisRun());
+            assertEquals(600, resumed.appliedEventsThisRun());
+            assertEquals(1_000, resumed.appliedEventsTotal());
+            assertEquals(0, resumed.duplicatesThisRun());
+            assertEquals(uninterrupted.finalReplayDigest(), resumed.finalReplayDigest());
+            assertEquals(recording.expectedReplayDigest(), resumed.finalReplayDigest());
+            final CompletionProof proof = proofs.find(checkpointKey).orElseThrow();
+            assertEquals(recording.stopPosition(), proof.replayStopPosition());
+            assertEquals(recording.expectedReplayDigest(), proof.finalReplayDigest());
+
+            printDemo(
+                recording,
+                crashPosition,
+                crashSequence,
+                uninterrupted,
+                resumed);
         }
     }
 
@@ -137,11 +154,44 @@ class AeronReplayCoordinatorIntegrationTest
             checkpointKey,
             Long.toString(recording.stopPosition()),
             Long.toString(recording.eventCount()),
-            Long.toUnsignedString(recording.expectedStateHash()),
+            Long.toUnsignedString(recording.expectedReplayDigest()),
             Long.toString(crashSequence))
             .redirectErrorStream(true)
             .redirectOutput(childLog.toFile())
             .start();
+    }
+
+    private static void printDemo(
+        final EmbeddedArchiveFixture.Recording recording,
+        final long crashPosition,
+        final long crashSequence,
+        final ReplayResult uninterrupted,
+        final ReplayResult resumed)
+    {
+        System.out.println("[1/6] Started embedded Aeron Archive");
+        System.out.println("[2/6] Recorded 1,000 SBE events");
+        System.out.println("[3/6] Completed uninterrupted replay");
+        System.out.println("[4/6] Halted replay process after checkpoint sequence 400");
+        System.out.println("[5/6] Resumed from saved Aeron position");
+        System.out.println("[6/6] Final replay digest matched uninterrupted replay");
+        System.out.println("recordingId=" + recording.recordingId());
+        System.out.println("replayStartPosition=" + resumed.replayStartPosition());
+        System.out.println("boundedStopPosition=" + resumed.replayStopPosition());
+        System.out.println("crashCheckpointPosition=" + crashPosition);
+        System.out.println("crashCheckpointSequence=" + crashSequence);
+        System.out.println(
+            "firstEventSequenceAfterResume=" +
+                resumed.firstAppliedEventSequenceThisRun());
+        System.out.println("finalEventSequence=" + resumed.finalEventSequence());
+        System.out.println(
+            "uninterruptedReplayDigest=" +
+                Long.toUnsignedString(uninterrupted.finalReplayDigest()));
+        System.out.println(
+            "resumedReplayDigest=" +
+                Long.toUnsignedString(resumed.finalReplayDigest()));
+        System.out.println("appliedEventsTotal=" + resumed.appliedEventsTotal());
+        System.out.println("duplicatesThisRun=" + resumed.duplicatesThisRun());
+        System.out.println("verificationPassed=" + resumed.verificationPassed());
     }
 
     private static boolean isWindows()

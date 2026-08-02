@@ -28,7 +28,7 @@ public final class CrashReplayProcessMain
         {
             throw new IllegalArgumentException(
                 "Expected: aeronDirectory checkpointDirectory recordingId checkpointKey " +
-                "stopPosition expectedSequence expectedStateHash crashSequence");
+                "stopPosition expectedSequence expectedReplayDigest crashSequence");
         }
 
         final ReplayProperties properties = properties(
@@ -62,9 +62,10 @@ public final class CrashReplayProcessMain
         properties.setCheckpointDirectory(checkpointDirectory);
         properties.setReplayChannel("aeron:ipc");
         properties.setReplayStreamId(1002);
-        properties.setTimeout(Duration.ofSeconds(20));
+        properties.setNoProgressTimeout(Duration.ofSeconds(20));
+        properties.setArchiveRequestTimeout(Duration.ofSeconds(20));
         properties.setFragmentLimit(20);
-        properties.setCheckpointEvery(50);
+        properties.setCheckpointEveryProcessedMessages(50);
         properties.getArchive().setControlRequestChannel(
             EmbeddedArchiveFixture.LOCAL_CONTROL_CHANNEL);
         properties.getArchive().setControlRequestStreamId(

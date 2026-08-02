@@ -11,22 +11,22 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class ProjectionStateTest
 {
     @Test
-    void duplicateEventIsIdempotentButAdvancesItsFullyProcessedAeronPosition()
+    void duplicateDoesNotChangeReplayDigest()
     {
         final ProjectionState state = ProjectionState.from(
             Checkpoint.initial("orders", 7, 64));
         final MatchingEvent event = event(1);
 
         assertEquals(ProjectionState.ApplyResult.APPLIED, state.apply(event, 128));
-        final long stateHashAfterFirstApplication = state.stateHash();
+        final long replayDigestAfterFirstApplication = state.replayDigest();
 
         assertEquals(ProjectionState.ApplyResult.DUPLICATE, state.apply(event, 192));
         assertEquals(1, state.lastAppliedEventSequence());
         assertEquals(192, state.lastAppliedAeronPosition());
-        assertEquals(1, state.appliedEventCount());
-        assertEquals(1, state.duplicateEventCount());
-        assertEquals(0, state.gapCount());
-        assertEquals(stateHashAfterFirstApplication, state.stateHash());
+        assertEquals(1, state.appliedEventsTotal());
+        assertEquals(1, state.duplicatesTotal());
+        assertEquals(0, state.sequenceGapsThisRun());
+        assertEquals(replayDigestAfterFirstApplication, state.replayDigest());
     }
 
     private static MatchingEvent event(final long sequence)

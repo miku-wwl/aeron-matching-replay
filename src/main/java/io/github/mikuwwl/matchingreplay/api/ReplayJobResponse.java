@@ -1,9 +1,11 @@
 package io.github.mikuwwl.matchingreplay.api;
 
 import io.github.mikuwwl.matchingreplay.aeron.ReplayCommand;
+import io.github.mikuwwl.matchingreplay.aeron.ReplayProgress;
 import io.github.mikuwwl.matchingreplay.aeron.ReplayResult;
 import io.github.mikuwwl.matchingreplay.application.ReplayJobSnapshot;
 import io.github.mikuwwl.matchingreplay.application.ReplayJobState;
+import io.github.mikuwwl.matchingreplay.failure.ReplayFailure;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -15,8 +17,9 @@ public record ReplayJobResponse(
     Instant acceptedAt,
     Instant startedAt,
     Instant completedAt,
+    Progress progress,
     Result result,
-    String error)
+    ReplayFailure failure)
 {
     public static ReplayJobResponse from(final ReplayJobSnapshot snapshot)
     {
@@ -27,8 +30,9 @@ public record ReplayJobResponse(
             snapshot.acceptedAt(),
             snapshot.startedAt(),
             snapshot.completedAt(),
+            snapshot.progress() == null ? null : Progress.from(snapshot.progress()),
             snapshot.result() == null ? null : Result.from(snapshot.result()),
-            snapshot.error());
+            snapshot.failure());
     }
 
     public record Command(
@@ -36,7 +40,7 @@ public record ReplayJobResponse(
         String checkpointKey,
         Long stopPosition,
         long expectedLastEventSequence,
-        String expectedStateHash,
+        String expectedReplayDigest,
         String correlationId)
     {
         static Command from(final ReplayCommand command)
@@ -46,8 +50,36 @@ public record ReplayJobResponse(
                 command.checkpointKey(),
                 command.stopPosition(),
                 command.expectedLastEventSequence(),
-                Long.toUnsignedString(command.expectedStateHash()),
+                Long.toUnsignedString(command.expectedReplayDigest()),
                 command.correlationId());
+        }
+    }
+
+    public record Progress(
+        long replayStartPosition,
+        long currentPosition,
+        long replayStopPosition,
+        double progressPercent,
+        long lastEventSequence,
+        long appliedEventsThisRun,
+        long duplicatesThisRun,
+        long lastCheckpointPosition,
+        long eventsPerSecond,
+        Instant lastProgressAt)
+    {
+        static Progress from(final ReplayProgress progress)
+        {
+            return new Progress(
+                progress.replayStartPosition(),
+                progress.currentPosition(),
+                progress.replayStopPosition(),
+                progress.progressPercent(),
+                progress.lastEventSequence(),
+                progress.appliedEventsThisRun(),
+                progress.duplicatesThisRun(),
+                progress.lastCheckpointPosition(),
+                progress.eventsPerSecond(),
+                progress.lastProgressAt());
         }
     }
 
@@ -56,13 +88,17 @@ public record ReplayJobResponse(
         String checkpointKey,
         long replayStartPosition,
         long replayStopPosition,
-        long firstRecoveredSequence,
-        long lastRecoveredSequence,
-        long finalSequence,
-        long appliedEvents,
-        long gaps,
-        long duplicates,
-        String stateHash,
+        long firstAppliedEventSequenceThisRun,
+        long lastAppliedEventSequenceThisRun,
+        long finalEventSequence,
+        long expectedLastEventSequence,
+        long appliedEventsThisRun,
+        long appliedEventsTotal,
+        long duplicatesThisRun,
+        long duplicatesTotal,
+        long sequenceGapsThisRun,
+        String finalReplayDigest,
+        String expectedReplayDigest,
         long replayDurationMs,
         boolean verificationPassed)
     {
@@ -73,13 +109,17 @@ public record ReplayJobResponse(
                 result.checkpointKey(),
                 result.replayStartPosition(),
                 result.replayStopPosition(),
-                result.firstRecoveredSequence(),
-                result.lastRecoveredSequence(),
-                result.finalSequence(),
-                result.appliedEvents(),
-                result.gaps(),
-                result.duplicates(),
-                Long.toUnsignedString(result.stateHash()),
+                result.firstAppliedEventSequenceThisRun(),
+                result.lastAppliedEventSequenceThisRun(),
+                result.finalEventSequence(),
+                result.expectedLastEventSequence(),
+                result.appliedEventsThisRun(),
+                result.appliedEventsTotal(),
+                result.duplicatesThisRun(),
+                result.duplicatesTotal(),
+                result.sequenceGapsThisRun(),
+                Long.toUnsignedString(result.finalReplayDigest()),
+                Long.toUnsignedString(result.expectedReplayDigest()),
                 result.replayDurationMs(),
                 result.verificationPassed());
         }

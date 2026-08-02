@@ -15,11 +15,13 @@ if (-not $checkpointRoot.StartsWith(
     throw "Refusing to clean outside repository: $checkpointRoot"
 }
 
-if ($PSCmdlet.ShouldProcess($checkpointRoot, "Remove replay checkpoints")) {
-    Get-ChildItem -LiteralPath $checkpointRoot -File -ErrorAction SilentlyContinue |
+if ($PSCmdlet.ShouldProcess(
+    $checkpointRoot,
+    "Remove replay progress checkpoints and completion proofs")) {
+    Get-ChildItem -LiteralPath $checkpointRoot -Force -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -ne ".gitkeep" } |
-        Remove-Item -Force
+        Remove-Item -Recurse -Force
 }
 
-Write-Host "CHECKPOINTS_CLEAN"
+Write-Host "REPLAY_STATE_CLEAN"
 Write-Host "checkpointDirectory=$checkpointRoot"

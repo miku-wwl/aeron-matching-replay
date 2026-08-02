@@ -4,7 +4,7 @@ public enum ReplayJobState
 {
     QUEUED,
     RUNNING,
-    SUCCEEDED,
+    VERIFIED,
     VERIFICATION_FAILED,
     FAILED
 }

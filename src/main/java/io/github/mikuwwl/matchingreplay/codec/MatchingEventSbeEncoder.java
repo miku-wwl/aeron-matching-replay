@@ -44,8 +44,12 @@ public final class MatchingEventSbeEncoder
             .quantity(event.quantity())
             .remainingQuantity(event.remainingQuantity())
             .symbolId(event.symbolId())
-            .side(toSbe(event.side()));
-        return MessageHeaderEncoder.ENCODED_LENGTH + acceptedEncoder.encodedLength();
+            .side(toSbe(event.side()))
+            .sourceId(event.sourceId());
+        return encodedLength(
+            event,
+            OrderAcceptedEncoder.sourceIdEncodingOffset(),
+            acceptedEncoder.encodedLength());
     }
 
     private int encodeTrade(
@@ -63,8 +67,12 @@ public final class MatchingEventSbeEncoder
             .quantity(event.quantity())
             .takerRemainingQuantity(event.remainingQuantity())
             .symbolId(event.symbolId())
-            .takerSide(toSbe(event.side()));
-        return MessageHeaderEncoder.ENCODED_LENGTH + tradeEncoder.encodedLength();
+            .takerSide(toSbe(event.side()))
+            .sourceId(event.sourceId());
+        return encodedLength(
+            event,
+            TradeCreatedEncoder.sourceIdEncodingOffset(),
+            tradeEncoder.encodedLength());
     }
 
     private int encodeMatched(
@@ -83,8 +91,34 @@ public final class MatchingEventSbeEncoder
             .remainingQuantity(event.remainingQuantity())
             .symbolId(event.symbolId())
             .side(toSbe(event.side()))
-            .state(state);
-        return MessageHeaderEncoder.ENCODED_LENGTH + matchedEncoder.encodedLength();
+            .state(state)
+            .sourceId(event.sourceId());
+        return encodedLength(
+            event,
+            OrderMatchedEncoder.sourceIdEncodingOffset(),
+            matchedEncoder.encodedLength());
+    }
+
+    private int encodedLength(
+        final MatchingEvent event,
+        final int versionOneBlockLength,
+        final int currentBlockLength)
+    {
+        if (event.schemaVersion() == 1)
+        {
+            headerEncoder
+                .version(1)
+                .blockLength(versionOneBlockLength);
+            return MessageHeaderEncoder.ENCODED_LENGTH + versionOneBlockLength;
+        }
+        if (event.schemaVersion() == MatchingEventSbeDispatcher.SCHEMA_VERSION)
+        {
+            return MessageHeaderEncoder.ENCODED_LENGTH + currentBlockLength;
+        }
+        throw new IllegalArgumentException(
+            "Encoder supports schema versions 1 and " +
+                MatchingEventSbeDispatcher.SCHEMA_VERSION +
+                ", actual=" + event.schemaVersion());
     }
 
     private static SbeSide toSbe(final Side side)

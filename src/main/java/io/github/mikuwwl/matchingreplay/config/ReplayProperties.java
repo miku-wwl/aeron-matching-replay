@@ -27,13 +27,18 @@ public class ReplayProperties
     private int replayStreamId = 1002;
 
     @NotNull
-    private Duration timeout = Duration.ofSeconds(20);
+    private Duration noProgressTimeout = Duration.ofSeconds(20);
+
+    @NotNull
+    private Duration archiveRequestTimeout = Duration.ofSeconds(20);
+
+    private Duration maximumReplayDuration;
 
     @Min(1)
     private int fragmentLimit = 20;
 
     @Min(1)
-    private int checkpointEvery = 100;
+    private int checkpointEveryProcessedMessages = 100;
 
     @Min(1)
     private int workerCount = 1;
@@ -85,14 +90,34 @@ public class ReplayProperties
         this.replayStreamId = replayStreamId;
     }
 
-    public Duration getTimeout()
+    public Duration getNoProgressTimeout()
     {
-        return timeout;
+        return noProgressTimeout;
     }
 
-    public void setTimeout(final Duration timeout)
+    public void setNoProgressTimeout(final Duration noProgressTimeout)
     {
-        this.timeout = timeout;
+        this.noProgressTimeout = noProgressTimeout;
+    }
+
+    public Duration getMaximumReplayDuration()
+    {
+        return maximumReplayDuration;
+    }
+
+    public void setMaximumReplayDuration(final Duration maximumReplayDuration)
+    {
+        this.maximumReplayDuration = maximumReplayDuration;
+    }
+
+    public Duration getArchiveRequestTimeout()
+    {
+        return archiveRequestTimeout;
+    }
+
+    public void setArchiveRequestTimeout(final Duration archiveRequestTimeout)
+    {
+        this.archiveRequestTimeout = archiveRequestTimeout;
     }
 
     public int getFragmentLimit()
@@ -105,14 +130,15 @@ public class ReplayProperties
         this.fragmentLimit = fragmentLimit;
     }
 
-    public int getCheckpointEvery()
+    public int getCheckpointEveryProcessedMessages()
     {
-        return checkpointEvery;
+        return checkpointEveryProcessedMessages;
     }
 
-    public void setCheckpointEvery(final int checkpointEvery)
+    public void setCheckpointEveryProcessedMessages(
+        final int checkpointEveryProcessedMessages)
     {
-        this.checkpointEvery = checkpointEvery;
+        this.checkpointEveryProcessedMessages = checkpointEveryProcessedMessages;
     }
 
     public int getWorkerCount()
