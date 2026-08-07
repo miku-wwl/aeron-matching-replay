@@ -12,8 +12,8 @@ Aeron Archive 集成测试、Checkpoint/Completion Proof、API 与运维文档�
 | 2 | Replay 调用真实 Aeron Archive API | PASS |
 | 3 | Checkpoint 保存完全处理后的 `Header.position()` | PASS |
 | 4 | `eventSequence` 与 Aeron Position 彻底分离 | PASS |
-| 5 | Consumer 对重复事件幂等 | PASS |
-| 6 | 崩溃恢复 Replay Digest 等于 uninterrupted run | PASS |
+| 5 | Consumer 对 Duplicate 实现幂等 | PASS |
+| 6 | Crash Recovery 后的 Replay Digest 等于不中断运行 | PASS |
 
 最终验证命令：
 
@@ -28,7 +28,7 @@ live recording replay、duplicate、gap、无效/未来/短 block SBE、immutabl
 attempt proof、verification mismatch、Coordinator 级无进展超时，以及子 JVM
 `Runtime.halt(77)` 后恢复。
 
-Final Enhancement 同时确认：
+Final Enhancement 还确认了：
 
 - Maven Wrapper 3.9.9 从 Maven Central 下载，不依赖区域镜像；
 - 每个 job 生成独立 `attemptId`；
@@ -38,7 +38,7 @@ Final Enhancement 同时确认：
 - 不存在 Checkpoint 时从 recording start 开始，因此已移除误导性的
   `CHECKPOINT_NOT_FOUND`。
 
-## 1. SBE 确实由 Maven generate-sources 生成
+## 1. SBE 确实由 Maven `generate-sources` 生成
 
 结果：PASS。
 
@@ -69,7 +69,7 @@ actingBlockLengthBelowV1MinimumFails
 actingBlockLengthBelowV2MinimumFails
 ```
 
-## 2. Replay 确实调用 Aeron Archive API
+## 2. Replay 确实调用真实 Aeron Archive API
 
 结果：PASS。
 
@@ -89,7 +89,7 @@ actingBlockLengthBelowV2MinimumFails
 仍为 live 的情况下先发布 1..5、捕获 Position、再发布 6..10，证明 replay 只处理
 1..5，进度到 100%，Proof 也保存原边界。
 
-## 3. Checkpoint 保存的是完整处理后的 Header.position()
+## 3. Checkpoint 保存的是完整处理后的 `Header.position()`
 
 结果：PASS。
 
@@ -120,7 +120,7 @@ offset。decode、schema 或 sequence 失败会在推进 Position 前终止。
 该结论证明支持原子移动文件系统上的进程崩溃恢复，不等于父目录已 `fsync`、设备
 完成断电安全刷盘或状态已复制。
 
-## 4. eventSequence 与 Aeron Position 完全分离
+## 4. `eventSequence` 与 Aeron Position 完全分离
 
 结果：PASS。
 
@@ -134,9 +134,9 @@ offset。decode、schema 或 sequence 失败会在推进 Position 前终止。
 `expectedLastEventSequence` 与 `stopPosition`。测试还断言 sequence 400 的
 Position 数值不等于 400，防止两个概念被意外混用。
 
-## 5. 重复事件处理幂等
+## 5. Duplicate 处理具备幂等性
 
-结果：PASS（针对当前 reference projection）。
+结果：PASS（针对当前 Reference Projection）。
 
 `eventSequence <= lastAppliedEventSequence` 时：
 
@@ -152,7 +152,7 @@ duplicate 也计入 `checkpointEveryProcessedMessages`，因为它的 Position �
 若将内存 Projection 换成数据库或远程调用，业务效果、Inbox/dedup 记录和
 Checkpoint 必须形成同一事务恢复单元；本地原子文件不能自动保证外部副作用幂等。
 
-## 6. 崩溃恢复后的 Replay Digest 与 uninterrupted run 一致
+## 6. Crash Recovery 后的 Replay Digest 与不中断运行一致
 
 结果：PASS。
 
@@ -207,7 +207,7 @@ Coordinator 级 `stalledReplayReturnsNoProgressTimeout` 使用注入的 monotoni
 code=`NO_PROGRESS_TIMEOUT`、Checkpoint 停在最后成功 Position、Proof 缺失，并返回
 实际无进展时长和配置 timeout。
 
-## Archive 耐久性工程取舍
+## Archive Durability 的工程取舍
 
 本项目严格区分：
 
@@ -226,9 +226,8 @@ code=`NO_PROGRESS_TIMEOUT`、Checkpoint 停在最后成功 Position、Proof 缺�
 ## OrderBook 与项目边界
 
 当前生产项目只有 replay 服务，不包含 OrderBook、不重新撮合、不重放 command
-进入 matching logic。历史文档中的最小 OrderBook 只是早期演示事件生成方案，不
-代表作者在 OKX 负责 OrderBook。该文档已移到
-[`docs/legacy`](legacy/original-mvp-guide.md)，不再属于主要阅读路径。
+进入 matching logic。历史方案中的最小 OrderBook 只是早期演示事件生成方案，不代表作者在
+OKX 负责 OrderBook。该历史方案已从仓库移除，不属于当前阅读路径。
 
 仍需生产接入方决定：外部 Projection 的事务边界、Archive/Catalog/Checkpoint 的
 存储保证、复制/Cluster 策略，以及 HTTP job 历史的持久化需求。

@@ -1,6 +1,6 @@
 # Operations
 
-## Build, verify, and demonstrate
+## 构建、验证与演示
 
 ```powershell
 .\mvnw.cmd --version
@@ -8,29 +8,28 @@
 .\scripts\demo-replay.ps1
 ```
 
-The wrapper downloads Maven 3.9.9 from Maven Central.
-`clean verify` regenerates SBE Java under `target/generated-sources/sbe`, runs
-unit and API tests, starts a real embedded `ArchivingMediaDriver` for the
-integration matrix, and terminates a child replay JVM with `Runtime.halt(77)`
-to prove hard-crash recovery. The demo runs the focused crash workflow and
-exits non-zero on failure.
+Wrapper 会从 Maven Central 下载 Maven 3.9.9。`clean verify` 会在
+`target/generated-sources/sbe` 重新生成 SBE Java 代码，运行 Unit Test 和 API Test，
+启动真实的嵌入式 `ArchivingMediaDriver` 执行 Integration Test，并使用
+`Runtime.halt(77)` 终止子 Replay JVM，以验证 Hard Crash Recovery。Demo 会执行聚焦的
+Crash Workflow，失败时返回非零退出码。
 
-Deleting `target/` is safe. Generated SBE encoders and decoders are build output
-and are recreated during `generate-sources`.
+删除 `target/` 是安全的。生成的 SBE Encoder 和 Decoder 属于构建产物，会在
+`generate-sources` 阶段重新生成。
 
-## Package and run
+## 打包与运行
 
 ```powershell
 .\mvnw.cmd -ntp package
 .\scripts\run-service.ps1 -AeronDirectory "D:\aeron\driver"
 ```
 
-The helper supplies the JVM module opens required by Aeron. The production
-service expects an upstream Media Driver and Archive; it never embeds them.
+辅助脚本会提供 Aeron 所需的 JVM Module Open 参数。生产服务要求连接上游 Media Driver
+和 Archive，绝不会在进程内嵌入它们。
 
-## Configuration
+## 配置
 
-| Environment variable | Default | Purpose |
+| 环境变量 | 默认值 | 用途 |
 |---|---|---|
 | `AERON_DIR` | JVM temp `aeron-default` | Media Driver directory |
 | `REPLAY_CHECKPOINT_DIR` | `./runtime/checkpoints` | Progress checkpoints and completion proofs |
@@ -47,23 +46,20 @@ service expects an upstream Media Driver and Archive; it never embeds them.
 | `ARCHIVE_CONTROL_RESPONSE_CHANNEL` | `aeron:ipc` | Archive response channel |
 | `SERVER_PORT` | `8080` | HTTP port |
 
-`maximumReplayDuration` is intentionally unset. Configure a distinct absolute
-limit only when policy requires one, for example:
+`maximumReplayDuration` 默认不设置。只有在策略明确要求时，才配置独立的绝对时长限制，例如：
 
 ```powershell
 $env:MATCHING_REPLAY_MAXIMUM_REPLAY_DURATION = "30m"
 .\scripts\run-service.ps1 -AeronDirectory "D:\aeron\driver"
 ```
 
-The checkpoint cadence counts all successfully handled SBE messages, including
-duplicates. A duplicate has no business effect but its consumed Aeron Position
-must still become durable.
+Checkpoint Cadence 会统计所有成功处理的 SBE Message，包括 Duplicate。Duplicate 虽然
+没有业务 Effect，但其消费过的 Aeron Position 仍然必须变得可持久恢复。
 
-IPC defaults assume the service shares a Media Driver runtime with the Archive
-control client. For UDP control, configure deployment-specific request and
-response endpoints.
+IPC 默认值假设 Service 与 Archive Control Client 共享同一个 Media Driver Runtime。
+如果使用 UDP Control，请按具体部署配置 Request Endpoint 和 Response Endpoint。
 
-## Health, jobs, and progress
+## Health、Job 与 Progress
 
 ```powershell
 Invoke-RestMethod http://localhost:8080/actuator/health
@@ -71,12 +67,11 @@ Invoke-RestMethod http://localhost:8080/api/v1/replays
 Invoke-RestMethod http://localhost:8080/actuator/metrics
 ```
 
-Archive connectivity is checked when a job starts, so an idle service can
-remain healthy during an upstream maintenance window. The job resource exposes
-monotonic current Position, stop Position, percentage, last sequence, per-run
-counters, checkpoint Position, throughput, and last progress time.
+Archive Connectivity 会在 Job 开始时检查，因此上游维护期间，空闲服务仍可保持 Health。
+Job Resource 会暴露单调递增的 Current Position、Stop Position、百分比、最后 Sequence、
+本次运行 Counter、Checkpoint Position、吞吐量和最后 Progress 时间。
 
-## Structured lifecycle logs
+## Structured Lifecycle Log
 
 Lifecycle event names are:
 
@@ -91,80 +86,70 @@ REPLAY_VERIFICATION_FAILED
 REPLAY_FAILED
 ```
 
-Every lifecycle event contains `jobId`; MDC carries `jobId`, `attemptId`,
-`correlationId`, and `recordingId`. Position, sequence, counters, failure code,
-and duration are included where relevant. Logging occurs at
-lifecycle/checkpoint boundaries, not for every event.
+每个 Lifecycle Event 都包含 `jobId`；MDC 携带 `jobId`、`attemptId`、`correlationId` 和
+`recordingId`。日志会按需包含 Position、Sequence、Counter、Failure Code 和 Duration。
+日志只记录 Lifecycle/Checkpoint 边界，不会为每个 Event 单独打印。
 
-## Micrometer metrics
+## Micrometer Metrics
 
-Actuator exposes the following low-cardinality meters:
+Actuator 暴露以下低基数 Meter：
 
-| Meter | Meaning |
+| Meter | 含义 |
 |---|---|
-| `replay.jobs` with terminal `status` tag | Completed jobs by status |
-| `replay.duration` | Execution time |
-| `replay.events.applied` | Newly applied events |
-| `replay.duplicates` | Suppressed duplicates |
-| `replay.sequence.gaps` | Detected sequence gaps |
-| `replay.checkpoint.writes` | Successful progress checkpoint writes |
-| `replay.checkpoint.write.failures` | Failed checkpoint writes |
-| `replay.position.lag` | Aggregate remaining Position for active jobs |
-| `replay.no.progress.timeouts` | Jobs stopped by no-progress watchdog |
+| `replay.jobs` with terminal `status` tag | 按终态统计的已完成 Job |
+| `replay.duration` | 执行耗时 |
+| `replay.events.applied` | 新应用的 Event |
+| `replay.duplicates` | 被抑制的 Duplicate |
+| `replay.sequence.gaps` | 检测到的 Sequence Gap |
+| `replay.checkpoint.writes` | 成功写入的 Progress Checkpoint |
+| `replay.checkpoint.write.failures` | Checkpoint 写入失败 |
+| `replay.position.lag` | 活跃 Job 尚未处理的 Position 总量 |
+| `replay.no.progress.timeouts` | 被 No-progress Watchdog 停止的 Job |
 
-No meter uses `jobId`, `correlationId`, `recordingId`, or `checkpointKey` as a
-label.
+任何 Meter 都不会把 `jobId`、`correlationId`、`recordingId` 或 `checkpointKey` 用作 Label。
 
-Example:
+示例：
 
 ```powershell
 Invoke-RestMethod http://localhost:8080/actuator/metrics/replay.jobs
 Invoke-RestMethod http://localhost:8080/actuator/metrics/replay.position.lag
 ```
 
-## Replay state handling
+## Replay 状态处理
 
-Progress checkpoints are stored directly in the configured directory.
-Completion proofs are separate immutable files under
-`completion-proofs/{checkpointKey}/{attemptId}.properties`. Do not edit either
-artifact manually.
+Progress Checkpoint 直接存放在配置目录中。Completion Proof 是独立的不可变文件，路径为
+`completion-proofs/{checkpointKey}/{attemptId}.properties`。不要手动编辑这两类产物。
 
-Checkpoint writes force a temporary file and require atomic replacement on the
-same filesystem. Proof writes force complete temporary content, then atomically
-create a hard link that fails if the attempt already exists. Unsupported atomic
-filesystem behavior fails the job instead of silently degrading. This does not
-guarantee parent-directory `fsync`, device durability, or replication; storage
-must be selected for the deployment failure model.
+Checkpoint 写入会强制写入临时文件，并要求在同一文件系统内 Atomic Replace。Proof 写入
+会先强制写完临时内容，再原子创建 Hard Link；如果 Attempt 已存在，创建会失败。不支持
+Atomic File System 行为时，Job 会失败，不会静默降级。这不保证父目录 `fsync`、设备持久化
+或 Replication；应根据部署的 Failure Model 选择存储方案。
 
-To deliberately remove local development replay state:
+如果要主动删除本地开发环境的 Replay 状态：
 
 ```powershell
 .\scripts\clean-data.ps1 -Confirm
 ```
 
-This removes both progress checkpoints and completion proofs but preserves
-`runtime/checkpoints/.gitkeep`.
+该命令会删除 Progress Checkpoint 和 Completion Proof，但会保留
+`runtime/checkpoints/.gitkeep`。
 
-## Failure behavior
+## Failure 行为
 
-- A decode/schema/template/block-length failure or sequence gap stops
-  immediately and cannot advance the checkpoint past the invalid fragment.
-- A healthy replay can run longer than `REPLAY_NO_PROGRESS_TIMEOUT` while its
-  Position continues to advance.
-- A stalled replay fails with `NO_PROGRESS_TIMEOUT`, elapsed/configured timeout
-  values, and its last successfully processed Position/sequence.
-- A final progress checkpoint is written when the bounded Position is reached.
-- A verification mismatch retains that checkpoint, returns expected/actual
-  values, and creates no new completion proof.
-- A new immutable completion proof is created only for a `VERIFIED` attempt.
-  Replays sharing a checkpoint key—including no-op verification—retain
-  separate proof files.
+- Decode/Schema/Template/Block-Length Failure 或 Sequence Gap 会立即停止，不能把
+  Checkpoint 推进到无效 Fragment 之后。
+- 只要 Position 持续前进，健康的 Replay 可以运行超过 `REPLAY_NO_PROGRESS_TIMEOUT`。
+- 停滞的 Replay 会以 `NO_PROGRESS_TIMEOUT` 失败，并返回实际/配置的 Timeout 以及最后
+  成功处理的 Position/Sequence。
+- 到达有界 Position 时会写入最终 Progress Checkpoint。
+- Verification Mismatch 会保留该 Checkpoint，返回期望值/实际值，并且不创建新的 Proof。
+- 只有 `VERIFIED` Attempt 才会创建新的不可变 Completion Proof。共享同一个
+  Checkpoint Key 的 Replay（包括 no-op Verification）也会各自保留 Proof 文件。
 
-## Publication, recording, and durability
+## Publication、Recording 与 Durability
 
-Publication acceptance, Archive recording progress, device durability, and
-replicated/cluster commit are distinct milestones. The integration fixture
-waits until `recordingPosition >= publishedPosition` solely to remove a test
-race. This is an MVP verification trade-off, not a description of OKX
-production. Production systems may choose asynchronous Archive recording,
-replication, Aeron Cluster log semantics, or another durability policy.
+Publication Accepted、Archive Recording Progress、Device Durable 和
+Replicated/Cluster Committed 是不同的里程碑。Integration Fixture 等待
+`recordingPosition >= publishedPosition`，只是为了消除测试竞态。这是 MVP 的验证取舍，
+不代表 OKX 生产实现。生产系统可以选择异步 Archive Recording、Replication、Aeron
+Cluster Log 语义或其他 Durability Policy。

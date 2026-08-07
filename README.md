@@ -2,16 +2,14 @@
 
 [![Replay Verification](https://github.com/miku-wwl/aeron-matching-replay/actions/workflows/replay-verification.yml/badge.svg)](https://github.com/miku-wwl/aeron-matching-replay/actions/workflows/replay-verification.yml)
 
-An Aeron Archive–based replay and recovery reference implementation for
-SBE-encoded matching event streams, with bounded replay, position-based
-checkpointing, sequence validation, crash recovery, deterministic verification,
-and observable replay progress.
+这是一个基于 Aeron Archive 的 Replay/Recovery Reference Implementation，处理 SBE 编码的
+Matching Event Stream，并展示 Bounded Replay、基于 Position 的 Checkpoint、Sequence 校验、
+Crash Recovery、确定性 Verification 和可观测的 Replay Progress。
 
-This repository is one Java 21 Spring Boot service. It cooperates with an
-upstream Aeron Media Driver and Archive in normal operation; tests start a real
-embedded Archive so the complete workflow is reproducible.
+本仓库是一个 Java 21 Spring Boot Service。正常运行时，它连接上游 Aeron Media Driver 和
+Archive；测试会启动真实的嵌入式 Archive，以便完整复现工作流。
 
-## What this project demonstrates
+## 项目展示的核心流程
 
 ```text
 Capture recordingId and bounded stop Position
@@ -42,38 +40,29 @@ advance Position        apply deterministic digest
  verify final sequence + digest, then write proof
 ```
 
-The service uses the Aeron Archive replay API. It does not simulate replay by
-reading recording files.
+Service 使用 Aeron Archive Replay API，不会通过直接读取 Recording File 来模拟 Replay。
 
-## Core invariants
+## 核心不变量
 
-- **Replay boundary:** only fragments up to the captured stop Position are
-  consumed. Data appended later is outside that run.
-- **Sequence:** each newly applied event must have
-  `eventSequence = lastAppliedEventSequence + 1`.
-- **Duplicate:** an already-applied sequence advances the consumed Aeron
-  Position, but does not change the digest or applied-event count.
-- **Checkpoint:** `Header.position()` is saved only after the complete fragment
-  has been decoded and handled. It is never confused with the fragment start.
-- **Crash recovery:** the next process resumes at the last atomically persisted
-  Aeron Position. Business `eventSequence` remains a separate value.
-- **Verification:** an immutable, attempt-specific completion proof is created
-  only after both the expected final sequence and expected replay digest match.
-  A later replay using the same checkpoint key cannot overwrite it.
+- **Replay Boundary：**只消费不超过捕获的 Stop Position 的 Fragment；之后追加的数据属于下一次运行。
+- **Sequence：**每个新应用的 Event 都必须满足 `eventSequence = lastAppliedEventSequence + 1`。
+- **Duplicate：**已应用过的 Sequence 仍会推进消费到的 Aeron Position，但不会改变 Digest 或应用计数。
+- **Checkpoint：**完整 Fragment 解码并处理成功后，才保存 `Header.position()`，绝不把它与 Fragment 起点混淆。
+- **Crash Recovery：**新进程从最后一次 Atomic Persist 的 Aeron Position 恢复；业务 `eventSequence` 始终是独立值。
+- **Verification：**只有期望的最终 Sequence 和 Replay Digest 都匹配时，才创建不可变且绑定 Attempt 的 Completion Proof；后续使用同一 Checkpoint Key 的 Replay 不能覆盖它。
 
-## One-command demonstration
+## 一键演示
 
-Prerequisites: JDK 21. Maven is supplied by the wrapper.
+前置条件：JDK 21。Maven 由 Wrapper 提供。
 
 ```powershell
 .\scripts\demo-replay.ps1
 ```
 
-The command starts a real embedded Media Driver and Archive, records 1,000
-Maven-SBE-encoded events, performs an uninterrupted replay, terminates a child
-JVM with `Runtime.halt(77)` at checkpoint sequence 400, and resumes in a fresh
-coordinator. Output includes recording and boundary Positions, the crash
-checkpoint, the first sequence after restart, both digests, counters, and:
+该命令会启动真实的嵌入式 Media Driver 和 Archive，录制 1,000 个 Maven-SBE 编码的 Event，
+执行一次不中断的 Replay，在 Sequence 400 的 Checkpoint 后使用 `Runtime.halt(77)` 终止子
+JVM，然后由全新的 Coordinator 恢复。输出包含 Recording/Boundary Position、Crash Checkpoint、
+重启后的第一个 Sequence、两个 Digest、Counter，以及：
 
 ```text
 [1/6] Started embedded Aeron Archive
@@ -86,20 +75,19 @@ checkpoint, the first sequence after restart, both digests, counters, and:
 REPLAY WORKFLOW: PASS
 ```
 
-The proof is stronger than a graceful-restart test: the child cannot run normal
-shutdown hooks. After restart, the first newly applied event is sequence 401,
-the cumulative applied count is 1,000, duplicates are zero, and the resumed
-digest equals the uninterrupted digest.
+这个证明比 Graceful Restart Test 更强，因为子进程无法执行正常的 Shutdown Hook。重启后，
+第一个新应用的 Event 是 Sequence 401，累计应用数为 1,000，Duplicate 为 0，恢复后的
+Digest 与不中断运行的 Digest 相等。
 
-## API example
+## API 示例
 
-Start the service against an existing Media Driver and Archive:
+让 Service 连接已有的 Media Driver 和 Archive：
 
 ```powershell
 .\scripts\run-service.ps1 -AeronDirectory "D:\aeron\driver"
 ```
 
-Submit a bounded replay:
+提交一个 Bounded Replay：
 
 ```http
 POST /api/v1/replays
@@ -115,14 +103,11 @@ Content-Type: application/json
 }
 ```
 
-The request returns `202 Accepted`. Poll
-`GET /api/v1/replays/{jobId}`. A running response exposes `currentPosition`,
-`progressPercent`, `lastEventSequence`, per-run counters, latest checkpoint
-Position, throughput, and `lastProgressAt`. Terminal state is `VERIFIED`,
-`VERIFICATION_FAILED`, or `FAILED`; failures include a stable code and
-diagnostic fields rather than requiring message parsing.
-Each job also exposes a distinct `attemptId`; these two IDs identify its
-immutable completion proof.
+请求返回 `202 Accepted`。通过 `GET /api/v1/replays/{jobId}` 查询。运行中的响应会暴露
+`currentPosition`、`progressPercent`、`lastEventSequence`、本次运行 Counter、最新
+Checkpoint Position、吞吐量和 `lastProgressAt`。终态为 `VERIFIED`、`VERIFICATION_FAILED`
+或 `FAILED`；Failure 会提供稳定的 Code 和诊断字段，不需要解析 Message。每个 Job 还会
+提供独立的 `attemptId`；这两个 ID 共同标识它的不可变 Completion Proof。
 
 Counter names are explicit:
 
@@ -130,47 +115,44 @@ Counter names are explicit:
 - `appliedEventsTotal` and `duplicatesTotal` include the loaded checkpoint.
 - `sequenceGapsThisRun` belongs only to this execution attempt.
 
-See [API reference](docs/api.md) for complete request and response examples.
+完整的请求与响应示例请参阅 [API 参考](docs/api.md)。
 
-## Failure scenarios proved by tests
+## 测试证明的 Failure 场景
 
-| Scenario | Invariant proved |
+| 场景 | 证明的不变量 |
 |---|---|
-| Bounded replay | Appended events beyond the captured stop Position are excluded |
-| Live bounded replay | Recording remains live while events after the captured boundary are ignored |
-| Duplicate sequence | Position advances; digest and applied count do not |
-| Sequence gap | Fails with `SEQUENCE_GAP`; checkpoint remains at the last good event |
-| Invalid/future SBE | Validates schema, template, version, and acting block length before application |
-| Verification mismatch | Progress remains valid but no completion proof is created or overwritten |
-| Repeated/no-op verification | Every successful attempt gets a separate immutable proof |
-| Hard process crash | Fresh process resumes at saved Position and matches uninterrupted digest |
-| No progress | Full Coordinator/job flow returns structured timeout and preserves its last checkpoint |
-| Schema evolution | Current decoder reads v1 and v2, and rejects unsupported future versions |
+| Bounded Replay | 捕获的 Stop Position 之后追加的 Event 不会被消费 |
+| Live Bounded Replay | Recording 仍在增长时，边界之后的 Event 仍会被忽略 |
+| Duplicate Sequence | Position 会前进，但 Digest 和应用计数不会变化 |
+| Sequence Gap | 以 `SEQUENCE_GAP` 失败，Checkpoint 停在最后一个有效 Event |
+| Invalid/Future SBE | 应用前校验 Schema、Template、Version 和 Acting Block Length |
+| Verification Mismatch | Progress 仍然有效，但不会创建或覆盖 Completion Proof |
+| Repeated/No-op Verification | 每个成功 Attempt 都会获得独立的不可变 Proof |
+| Hard Process Crash | 新进程从保存的 Position 恢复，并得到与不中断运行相同的 Digest |
+| No Progress | 完整 Coordinator/Job 流程返回结构化 Timeout，并保留最后一个 Checkpoint |
+| Schema Evolution | 当前 Decoder 可读取 v1/v2，并拒绝不支持的未来版本 |
 
-## Replay digest
+## Replay Digest
 
-The rolling FNV-64 digest is a compact deterministic event-stream proof, not a
-database or OrderBook state hash. Its canonical field order is:
+Rolling FNV-64 Digest 是紧凑的确定性 Event Stream Proof，不是 Database 或 OrderBook State
+Hash。Canonical 字段顺序为：
 
 ```text
 eventSequence, eventType, orderId, contraOrderId, tradeId,
 symbolId, side, price, quantity, remainingQuantity
 ```
 
-Timestamp, schema version, `sourceId`, and all Aeron transport metadata are
-excluded. The current digest is persisted in the progress checkpoint, making
-the chain resumable.
+Timestamp、Schema Version、`sourceId` 以及所有 Aeron Transport Metadata 都不参与计算。
+当前 Digest 会持久化到 Progress Checkpoint，因此这条 Digest Chain 可以在恢复后继续计算。
 
-## Explicit non-goals
+## 明确的非目标
 
-This project does not restore a matching engine or OrderBook, replay commands
-into matching logic, reconstruct maker/taker decisions, implement trading risk
-controls, or provide PostgreSQL/Kafka/Kubernetes/authentication/UI features.
-The small matching-event model exists only to produce realistic replay input.
-The implementation must not be read as a description of any proprietary OKX
-production architecture.
+本项目不恢复 Matching Engine 或 OrderBook，不把 Command 重新送入 Matching Logic，不重建
+Maker/Taker 决策，不实现 Trading Risk Control，也不提供 PostgreSQL/Kafka/Kubernetes、
+Authentication 或 UI 功能。小型 Matching Event Model 仅用于生成更真实的 Replay Input。
+不得将本实现理解为任何 OKX Proprietary Production Architecture 的描述。
 
-## Build and test
+## 构建与测试
 
 ```powershell
 git clone https://github.com/miku-wwl/aeron-matching-replay.git
@@ -182,30 +164,24 @@ Set-Location aeron-matching-replay
 .\mvnw.cmd -ntp clean verify
 ```
 
-The Maven Wrapper downloads Maven 3.9.9 from Maven Central; no regional mirror
-configuration is required.
+Maven Wrapper 会从 Maven Central 下载 Maven 3.9.9，不要求配置区域镜像。
 
-`generate-sources` runs the official SBE tool against
-`src/main/resources/sbe/matching-events.xml`; generated Java is written only to
-`target/generated-sources/sbe`. Deleting `target/` is safe because Maven
-regenerates the codecs.
+`generate-sources` 会使用官方 SBE Tool 处理
+`src/main/resources/sbe/matching-events.xml`；生成的 Java 代码只写入
+`target/generated-sources/sbe`。删除 `target/` 是安全的，因为 Maven 会重新生成 Codec。
 
-The full suite uses an actual `ArchivingMediaDriver`, covers the focused failure
-matrix, and runs the hard-crash child-JVM test. CI runs the same command on
-pushes to `main` and pull requests.
+完整测试套件使用真实的 `ArchivingMediaDriver`，覆盖重点 Failure Matrix，并运行 Hard Crash
+Child-JVM Test。CI 在推送到 `main` 和提交 Pull Request 时执行相同的命令。
 
-## Operations and observability
+## 运维与可观测性
 
-Progress checkpoints live in `runtime/checkpoints`; verified completion proofs
-are immutable files under
+Progress Checkpoint 位于 `runtime/checkpoints`；Verified Completion Proof 是以下路径下的不可变文件：
 `runtime/checkpoints/completion-proofs/{checkpointKey}/{attemptId}.properties`.
-The checkpoint
-cadence counts all successfully processed messages, including duplicates,
-because their consumed Aeron Position must be recoverable.
+Checkpoint Cadence 会统计所有成功处理的 Message，包括 Duplicate，因为它们消费到的 Aeron
+Position 也必须可恢复。
 
-Actuator exposes replay-focused Micrometer metrics at `/actuator/metrics`.
-Lifecycle logs carry MDC `jobId`, `attemptId`, `correlationId`, and
-`recordingId` and avoid per-event logging. See:
+Actuator 在 `/actuator/metrics` 暴露 Replay 相关的 Micrometer Metrics。Lifecycle Log 携带
+MDC `jobId`、`attemptId`、`correlationId` 和 `recordingId`，不会为每个 Event 单独记录。详见：
 
 - [Architecture](docs/architecture.md)
 - [Operations](docs/operations.md)

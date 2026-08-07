@@ -1,9 +1,9 @@
 # Replay API
 
-The API creates asynchronous, bounded replay jobs. Job history is in memory;
-progress checkpoints and completion proofs survive service restarts.
+该 API 用于创建异步、具有明确边界的 Replay Job。Job 历史保存在内存中；Progress Checkpoint
+和 Completion Proof 会在服务重启后保留。
 
-## Start a replay
+## 发起 Replay
 
 ```http
 POST /api/v1/replays
@@ -19,18 +19,17 @@ Content-Type: application/json
 }
 ```
 
-| Field | Required | Meaning |
+| 字段 | 必填 | 含义 |
 |---|---:|---|
-| `recordingId` | yes | Aeron Archive recording identifier |
-| `checkpointKey` | no | Projection/recovery identity; defaults to `default` |
-| `stopPosition` | no | Bounded end Position; current available Position is captured once when omitted |
-| `expectedLastEventSequence` | yes | Mandatory final business sequence expectation |
-| `expectedReplayDigest` | yes | Mandatory unsigned 64-bit digest, represented as a decimal string |
-| `correlationId` | no | Caller correlation value, at most 128 characters |
+| `recordingId` | 是 | Aeron Archive 的 recording 标识。每个 Replay Command 都必须明确指定。 |
+| `checkpointKey` | 否 | Projection/Recovery 的身份标识，默认值为 `default`。 |
+| `stopPosition` | 否 | 本次 Replay 的结束 Position。不提供时，只在开始时捕获一次当前可用 Position。 |
+| `expectedLastEventSequence` | 是 | 期望的最终业务 Sequence。 |
+| `expectedReplayDigest` | 是 | 期望的 unsigned 64-bit Digest，以十进制字符串表示。 |
+| `correlationId` | 否 | 调用方提供的关联标识，最长 128 个字符。 |
 
-The response is `202 Accepted`, contains a generated `jobId` and `attemptId`,
-and has a `Location` header for the job resource. Only one active job may use
-a `checkpointKey`; a conflict returns HTTP 409.
+响应为 `202 Accepted`，包含生成的 `jobId` 和 `attemptId`，并通过 `Location` Header
+指向 Job 资源。同一个 `checkpointKey` 同时只能有一个活跃 Job；冲突时返回 HTTP 409。
 
 PowerShell:
 
@@ -44,20 +43,20 @@ PowerShell:
   -CorrelationId recovery-2026-08-02
 ```
 
-## Inspect jobs
+## 查看 Job
 
 ```http
 GET /api/v1/replays/{jobId}
 GET /api/v1/replays
 ```
 
-States are:
+Job 状态如下：
 
-- `QUEUED`: accepted but not yet executing.
-- `RUNNING`: Archive replay is active.
-- `VERIFIED`: the bounded replay completed and both expectations matched.
-- `VERIFICATION_FAILED`: the boundary was reached, but an expectation differed.
-- `FAILED`: execution stopped because of a structured replay failure.
+- `QUEUED`：请求已接受，但尚未开始执行。
+- `RUNNING`：Archive Replay 正在进行。
+- `VERIFIED`：已到达 Replay 边界，且两个期望值都匹配。
+- `VERIFICATION_FAILED`：已到达边界，但至少一个期望值不匹配。
+- `FAILED`：发生结构化 Replay Failure，执行提前停止。
 
 Example running response:
 
@@ -91,9 +90,9 @@ Example running response:
 }
 ```
 
-`currentPosition` is monotonic and bounded by `replayStopPosition`.
-`lastCheckpointPosition` advances only after a successful atomic checkpoint
-write. Progress reaches 100% at the requested boundary.
+`currentPosition` 单调递增，且不会超过 `replayStopPosition`。只有 Atomic Checkpoint
+写入成功后，`lastCheckpointPosition` 才会前进。到达请求的 Replay 边界时，Progress
+达到 100%。
 
 Example verified result:
 
@@ -125,16 +124,15 @@ Example verified result:
 }
 ```
 
-Every verified attempt creates
-`completion-proofs/{checkpointKey}/{attemptId}.properties`. Proofs contain both
-IDs, correlation ID, replay range, resume flag, final sequence/digest, status,
-and completion time. They are immutable: reusing a checkpoint key creates a
-new proof, while reusing an existing attempt ID fails explicitly.
+每个 `VERIFIED` Attempt 都会创建
+`completion-proofs/{checkpointKey}/{attemptId}.properties`。Proof 包含两个 ID、
+Correlation ID、Replay Range、是否从 Checkpoint 恢复、最终 Sequence/Digest、状态和完成时间。
+Proof 不可修改：重复使用 `checkpointKey` 会生成新的 Proof；重复使用已有 `attemptId`
+会明确失败。
 
-## Failure response
+## Failure Response
 
-Expected replay failures expose a stable `failure.code` and nullable diagnostic
-fields:
+可预期的 Replay Failure 会返回稳定的 `failure.code`，以及可能为空的诊断字段：
 
 ```json
 {
@@ -157,7 +155,7 @@ fields:
 }
 ```
 
-Supported failure codes:
+支持的 Failure Code：
 
 ```text
 RECORDING_NOT_FOUND
@@ -179,25 +177,20 @@ REPLAY_IMAGE_UNAVAILABLE
 INTERNAL_ERROR
 ```
 
-Codec failures populate `templateId`, `schemaId`, `actingVersion`,
+Codec Failure 会在可获得时填充 `templateId`、`schemaId`、`actingVersion`、
 `actingBlockLength`, `minimumSupportedBlockLength`, and `fragmentPosition`
-when available. A known schema with an unknown template returns
-`UNSUPPORTED_TEMPLATE`; an unknown schema ID or future version returns
-`UNSUPPORTED_SCHEMA`. No-progress failures provide `currentPosition`,
+等字段。已知 Schema 中出现未知 Template 时返回 `UNSUPPORTED_TEMPLATE`；未知 Schema ID
+或未来版本返回 `UNSUPPORTED_SCHEMA`。No-progress Failure 会提供 `currentPosition`、
 `replayStopPosition`, `lastAppliedEventSequence`,
 `timeSinceLastProgressMillis`, and `configuredNoProgressTimeoutMillis`.
-Verification failures expose expected and actual sequences and unsigned
-digests.
+Verification Failure 会同时暴露期望值和实际的 Sequence 与 unsigned Digest。
 
-## Counter semantics
+## Counter 语义
 
-- `appliedEventsThisRun`: newly applied business events during this process run.
-- `appliedEventsTotal`: cumulative applied count loaded from and saved to the
-  progress checkpoint.
-- `duplicatesThisRun`: duplicates suppressed during this run.
-- `duplicatesTotal`: cumulative duplicate count.
-- `sequenceGapsThisRun`: gaps observed during this run; a gap terminates the
-  replay immediately.
+- `appliedEventsThisRun`：本次进程运行期间新应用的业务事件数。
+- `appliedEventsTotal`：从 Progress Checkpoint 加载并再次保存的累计应用数。
+- `duplicatesThisRun`：本次运行中被抑制的 Duplicate 数量。
+- `duplicatesTotal`：累计 Duplicate 数量。
+- `sequenceGapsThisRun`：本次运行发现的 Gap 数量；一旦发现 Gap，Replay 立即终止。
 
-Duplicates count as processed messages for checkpoint cadence because their
-Aeron Positions still have to become recoverable.
+Duplicate 仍然算作已处理消息，因为它们对应的 Aeron Position 也必须进入可恢复的 Checkpoint。
