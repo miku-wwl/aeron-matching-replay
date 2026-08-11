@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-config
+  namespace: job-demo
+data:
+  SPRING_DATASOURCE_URL: jdbc:postgresql://host.k3d.internal:15432/jobdemo
+  SPRING_RABBITMQ_HOST: host.k3d.internal
+  SPRING_RABBITMQ_PORT: "15673"
+  APP_SCHEDULER_POLL_DELAY: 1s
+  APP_SCHEDULER_BATCH_SIZE: "50"
+  APP_OUTBOX_DELAY: 250ms
+  APP_LEASE_DURATION: 30s
+  APP_HEARTBEAT_INTERVAL: 10s
+  APP_BUSY_REQUEUE_DELAY: 1s
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: demo-secret
+  namespace: job-demo
+type: Opaque
+stringData:
+  SPRING_DATASOURCE_USERNAME: jobdemo
+  SPRING_DATASOURCE_PASSWORD: jobdemo_password
+  SPRING_RABBITMQ_USERNAME: jobdemo
+  SPRING_RABBITMQ_PASSWORD: jobdemo_password
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keda-rabbitmq-secret
+  namespace: job-demo
+type: Opaque
+stringData:
+  host: amqp://host.k3d.internal:15673/%2f
+  username: jobdemo
+  password: jobdemo_password

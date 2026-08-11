@@ -1,0 +1,4 @@
+**
+!Dockerfile
+!target/
+!target/job-scheduler-keda-demo-*.jar

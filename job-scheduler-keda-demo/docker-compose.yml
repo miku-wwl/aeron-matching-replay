@@ -1,0 +1,45 @@
+name: job-scheduler-keda-demo
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: job-demo-postgres
+    environment:
+      POSTGRES_DB: jobdemo
+      POSTGRES_USER: jobdemo
+      POSTGRES_PASSWORD: jobdemo_password
+    ports:
+      - "15432:5432"
+    volumes:
+      - job-demo-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobdemo -d jobdemo"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    container_name: job-demo-rabbitmq
+    hostname: job-demo-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: jobdemo
+      RABBITMQ_DEFAULT_PASS: jobdemo_password
+    ports:
+      - "15673:5672"
+      - "15674:15672"
+    volumes:
+      - job-demo-rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  job-demo-postgres-data:
+    name: job-demo-postgres-data
+  job-demo-rabbitmq-data:
+    name: job-demo-rabbitmq-data

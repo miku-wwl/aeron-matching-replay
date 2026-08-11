@@ -1,0 +1,44 @@
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: demo-rabbitmq-auth
+  namespace: job-demo
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: keda-rabbitmq-secret
+      key: host
+    - parameter: username
+      name: keda-rabbitmq-secret
+      key: username
+    - parameter: password
+      name: keda-rabbitmq-secret
+      key: password
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: demo-worker-rabbitmq
+  namespace: job-demo
+spec:
+  scaleTargetRef:
+    name: demo-worker
+  pollingInterval: 5
+  cooldownPeriod: 60
+  minReplicaCount: 0
+  maxReplicaCount: 20
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 30
+  triggers:
+    - type: rabbitmq
+      metadata:
+        protocol: amqp
+        queueName: demo.jobs.ready
+        mode: QueueLength
+        value: "1"
+        activationValue: "0"
+      authenticationRef:
+        name: demo-rabbitmq-auth

@@ -1,0 +1,81 @@
+spring:
+  application:
+    name: job-scheduler-keda-demo
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:15432/jobdemo}
+    username: ${SPRING_DATASOURCE_USERNAME:jobdemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:jobdemo_password}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:6}
+      minimum-idle: 1
+      connection-timeout: 10000
+  flyway:
+    enabled: true
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    port: ${SPRING_RABBITMQ_PORT:15673}
+    username: ${SPRING_RABBITMQ_USERNAME:jobdemo}
+    password: ${SPRING_RABBITMQ_PASSWORD:jobdemo_password}
+    publisher-confirm-type: correlated
+    connection-timeout: 10s
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 1
+        concurrency: 1
+        max-concurrency: 1
+        default-requeue-rejected: false
+        missing-queues-fatal: false
+  lifecycle:
+    timeout-per-shutdown-phase: 35s
+  task:
+    scheduling:
+      pool:
+        size: 2
+  jackson:
+    time-zone: UTC
+
+server:
+  port: 8080
+  shutdown: graceful
+
+app:
+  role: ${APP_ROLE:api}
+  scheduler:
+    poll-delay: ${APP_SCHEDULER_POLL_DELAY:1s}
+    batch-size: ${APP_SCHEDULER_BATCH_SIZE:50}
+    outbox-delay: ${APP_OUTBOX_DELAY:250ms}
+  worker:
+    id: ${APP_WORKER_ID:${HOSTNAME:local-worker}}
+    lease-duration: ${APP_LEASE_DURATION:30s}
+    heartbeat-interval: ${APP_HEARTBEAT_INTERVAL:10s}
+    busy-requeue-delay: ${APP_BUSY_REQUEUE_DELAY:1s}
+  rabbit:
+    exchange: demo.jobs.exchange
+    ready-queue: demo.jobs.ready
+    dlq: demo.jobs.dlq
+    ready-routing-key: jobs.ready
+    dlq-routing-key: jobs.dlq
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+      group:
+        readiness:
+          include: readinessState,db,rabbit
+        liveness:
+          include: livenessState
+  health:
+    rabbit:
+      enabled: true
+
+logging:
+  pattern:
+    level: "%5p [role=${APP_ROLE:api}]"
