@@ -5,6 +5,4 @@ target/
 .tmp-*/
 tmp/
 
-runtime/checkpoints/*
-
-!runtime/checkpoints/.gitkeep
+runtime/
