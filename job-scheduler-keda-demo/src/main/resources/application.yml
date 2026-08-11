@@ -4,7 +4,7 @@ spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:15432/jobdemo}
     username: ${SPRING_DATASOURCE_USERNAME:jobdemo}
-    password: ${SPRING_DATASOURCE_PASSWORD:jobdemo_password}
+    password: ${SPRING_DATASOURCE_PASSWORD}
     hikari:
       maximum-pool-size: ${DB_POOL_SIZE:6}
       minimum-idle: 1
@@ -15,7 +15,7 @@ spring:
     host: ${SPRING_RABBITMQ_HOST:localhost}
     port: ${SPRING_RABBITMQ_PORT:15673}
     username: ${SPRING_RABBITMQ_USERNAME:jobdemo}
-    password: ${SPRING_RABBITMQ_PASSWORD:jobdemo_password}
+    password: ${SPRING_RABBITMQ_PASSWORD}
     publisher-confirm-type: correlated
     connection-timeout: 10s
     listener:

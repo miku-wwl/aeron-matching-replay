@@ -1,8 +1,10 @@
 . (Join-Path $PSScriptRoot 'common.ps1')
 
 $api = 'http://localhost:18080'
+$demoEnvironment = Get-DemoEnvironment
 $credentials = [Convert]::ToBase64String(
-    [Text.Encoding]::ASCII.GetBytes('jobdemo:jobdemo_password'))
+    [Text.Encoding]::ASCII.GetBytes(
+        "$($demoEnvironment.RabbitUsername):$($demoEnvironment.RabbitPassword)"))
 $initialQueue = Invoke-RestMethod `
     'http://localhost:15674/api/queues/%2F/demo.jobs.dlq' `
     -Headers @{ Authorization = "Basic $credentials" }

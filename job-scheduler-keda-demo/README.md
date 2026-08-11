@@ -19,7 +19,7 @@ HTTP 创建 Job
   -> 成功 ACK，数据库调度指数 backoff 重试，最终失败 Reject 到 DLQ
 ```
 
-同一个 Spring Boot JAR/Image 由 `APP_ROLE=api|scheduler|worker` 切换角色。Kubernetes 固定运行 1 个 API、2 个 Scheduler，Worker 由 KEDA 管理为 0–20 个副本。
+同一个 Spring Boot JAR/Image 由 `APP_ROLE=api|scheduler|worker` 切换角色。Kubernetes 固定运行 2 个 API、2 个 Scheduler，Worker 由 KEDA 管理为 0–20 个副本。API/Scheduler 使用零不可用滚动更新、PDB 和跨节点强制分布；Worker 使用不阻塞扩容的跨节点软分布。
 
 ## 隔离边界
 
@@ -50,6 +50,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 `prerequisites.ps1` 只在缺失时通过 WinGet 安装 k3d/Helm。`create-cluster.ps1` 使用 KEDA 官方 Helm chart 安装或升级 KEDA。`deploy.ps1` 会运行测试、构建单一镜像、导入 k3d 并部署。
 
+`up-infra.ps1` 首次运行时会生成 Git 已忽略的 `.env.local`，Postgres、RabbitMQ、应用 Pod 和 KEDA 共用其中的本地随机凭据。Kubernetes Secret 由 `deploy.ps1` 在运行时创建，密码不保存在 Compose、Kubernetes YAML 或 Git 中；`.env.example` 只列出所需变量名。
+
 常用观察命令：
 
 ```powershell
@@ -58,7 +60,7 @@ kubectl logs -n job-demo -l app.kubernetes.io/component=worker -f --prefix
 kubectl logs -n job-demo -l app.kubernetes.io/component=scheduler -f --prefix
 ```
 
-RabbitMQ 管理界面是 <http://localhost:15674>，用户名 `jobdemo`，密码 `jobdemo_password`。
+RabbitMQ 管理界面是 <http://localhost:15674>，用户名和密码读取本地 `.env.local`。
 RabbitMQ 只保留实际使用的 ready queue 与 DLQ；延迟重试由 Postgres
 `RETRY_WAIT/next_run_at` 驱动，不使用第二套 MQ retry queue。
 

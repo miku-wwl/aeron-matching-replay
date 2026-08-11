@@ -12,6 +12,7 @@ Assert-Command mvn
 Use-DemoKubectlContext
 
 $demoRoot = Get-DemoRoot
+$demoEnvironment = Get-DemoEnvironment -CreateIfMissing
 if (-not $SkipBuild) {
     Push-Location $demoRoot
     try {
@@ -26,6 +27,10 @@ if (-not $SkipBuild) {
 
 k3d image import job-scheduler-keda-demo:local --cluster job-demo
 if ($LASTEXITCODE -ne 0) { throw 'Could not import the image into k3d.' }
+
+kubectl apply -f (Join-Path $demoRoot 'kubernetes\namespace.yaml')
+if ($LASTEXITCODE -ne 0) { throw 'Could not apply the demo namespace.' }
+Set-DemoKubernetesSecrets -DemoEnvironment $demoEnvironment
 
 kubectl apply -k (Join-Path $demoRoot 'kubernetes')
 if ($LASTEXITCODE -ne 0) { throw 'Kubernetes apply failed.' }

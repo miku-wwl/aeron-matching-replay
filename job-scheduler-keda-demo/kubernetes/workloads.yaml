@@ -7,7 +7,14 @@ metadata:
     app.kubernetes.io/name: job-scheduler-keda-demo
     app.kubernetes.io/component: api
 spec:
-  replicas: 1
+  replicas: 2
+  minReadySeconds: 10
+  progressDeadlineSeconds: 180
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: job-scheduler-keda-demo
@@ -19,6 +26,14 @@ spec:
         app.kubernetes.io/component: api
     spec:
       terminationGracePeriodSeconds: 40
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: job-scheduler-keda-demo
+              app.kubernetes.io/component: api
       containers:
         - name: app
           image: job-scheduler-keda-demo:local
@@ -88,6 +103,13 @@ metadata:
     app.kubernetes.io/component: scheduler
 spec:
   replicas: 2
+  minReadySeconds: 10
+  progressDeadlineSeconds: 180
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: job-scheduler-keda-demo
@@ -99,6 +121,14 @@ spec:
         app.kubernetes.io/component: scheduler
     spec:
       terminationGracePeriodSeconds: 40
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: job-scheduler-keda-demo
+              app.kubernetes.io/component: scheduler
       containers:
         - name: app
           image: job-scheduler-keda-demo:local
@@ -163,6 +193,14 @@ spec:
         app.kubernetes.io/component: worker
     spec:
       terminationGracePeriodSeconds: 40
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: job-scheduler-keda-demo
+              app.kubernetes.io/component: worker
       containers:
         - name: app
           image: job-scheduler-keda-demo:local

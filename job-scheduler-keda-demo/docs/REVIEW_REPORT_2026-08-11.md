@@ -140,7 +140,7 @@ pending outbox rows: 0
 ready queue ready/unacked: 0/0
 ```
 
-验收结束后的部署状态：API 1/1、Scheduler 2/2、Worker 0/0；ready queue 已排空；`demo_jobs{state}`、`demo_jobs_running`、`demo_outbox_pending` 均可从 API 的 `/actuator/prometheus` 读取。
+本报告首次验收结束时的部署状态为 API 1/1、Scheduler 2/2、Worker 0/0；后续高可用增强已将 API 改为 2 副本。ready queue 已排空；`demo_jobs{state}`、`demo_jobs_running`、`demo_outbox_pending` 均可从 API 的 `/actuator/prometheus` 读取。
 
 ## 6. 代码量统计
 
@@ -213,7 +213,7 @@ CLOC 的 `code` 不含空行和注释。`.gitignore` 与 `.dockerignore` 是 2 �
 2. **Outbox 吞吐。** Publisher 为保证清晰语义，在数据库事务持锁期间最多等待 5 秒 Rabbit confirm。Demo 合理；高吞吐环境需要批量、分区、独立 relay 或 CDC，同时保留 at-least-once 幂等。
 3. **缩容中的长任务。** 当前可从 checkpoint 安全恢复，但 KEDA/HPA 仍可能终止忙 Worker。生产可增加 HPA scale-down stabilization、任务级 drain/延长 termination grace period，并按任务最长单元时间设置 Lease。
 4. **基础设施高可用。** Compose 中 Postgres/RabbitMQ 都是单节点，Rabbit quorum queue 在单节点上不提供节点故障容错；这只适合本地 Demo。
-5. **Secret 管理。** Kubernetes 与 Compose 使用固定演示账号密码；不得直接用于共享或生产环境。
+5. **Secret 管理。** 后续增强已移除固定密码，改为 Git 忽略的本地随机 `.env.local` 和运行时 Kubernetes Secret；本地管理员仍可读取 Docker/Kubernetes 运行时配置。
 6. **业务副作用。** 示例工作只更新数据库 checkpoint。真实外部副作用必须有自己的幂等键或去重表，不能仅依赖 MQ ACK。
 7. **构建告警。** Java 21 下测试成功，但 Maven 输出了 Mockito 动态 agent 的未来兼容性告警和 compilerVersion 弃用告警；升级 JDK/测试栈时应处理。
 

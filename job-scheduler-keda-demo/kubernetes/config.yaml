@@ -13,26 +13,3 @@ data:
   APP_LEASE_DURATION: 30s
   APP_HEARTBEAT_INTERVAL: 10s
   APP_BUSY_REQUEUE_DELAY: 1s
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: demo-secret
-  namespace: job-demo
-type: Opaque
-stringData:
-  SPRING_DATASOURCE_USERNAME: jobdemo
-  SPRING_DATASOURCE_PASSWORD: jobdemo_password
-  SPRING_RABBITMQ_USERNAME: jobdemo
-  SPRING_RABBITMQ_PASSWORD: jobdemo_password
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: keda-rabbitmq-secret
-  namespace: job-demo
-type: Opaque
-stringData:
-  host: amqp://host.k3d.internal:15673/%2f
-  username: jobdemo
-  password: jobdemo_password
