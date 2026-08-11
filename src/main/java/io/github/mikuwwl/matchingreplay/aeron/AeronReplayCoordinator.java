@@ -15,6 +15,7 @@ import io.github.mikuwwl.matchingreplay.failure.ReplayException;
 import io.github.mikuwwl.matchingreplay.failure.ReplayFailure;
 import io.github.mikuwwl.matchingreplay.failure.ReplayFailureCode;
 import io.github.mikuwwl.matchingreplay.projection.ProjectionState;
+import io.github.mikuwwl.matchingreplay.projection.ReplayProjection;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,6 +23,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 
 @Component
 public class AeronReplayCoordinator implements ReplayEngine
@@ -31,8 +33,8 @@ public class AeronReplayCoordinator implements ReplayEngine
     private final CompletionProofRepository completionProofs;
     private final ReplayProperties properties;
     private final MonotonicClock clock;
+    private final List<ReplayProjection> projections;
 
-    @Autowired
     public AeronReplayCoordinator(
         final AeronArchiveClientFactory clientFactory,
         final CheckpointRepository checkpoints,
@@ -40,11 +42,30 @@ public class AeronReplayCoordinator implements ReplayEngine
         final ReplayProperties properties,
         final MonotonicClock clock)
     {
+        this(
+            clientFactory,
+            checkpoints,
+            completionProofs,
+            properties,
+            clock,
+            List.of());
+    }
+
+    @Autowired
+    public AeronReplayCoordinator(
+        final AeronArchiveClientFactory clientFactory,
+        final CheckpointRepository checkpoints,
+        final CompletionProofRepository completionProofs,
+        final ReplayProperties properties,
+        final MonotonicClock clock,
+        final List<ReplayProjection> projections)
+    {
         this.clientFactory = clientFactory;
         this.checkpoints = checkpoints;
         this.completionProofs = completionProofs;
         this.properties = properties;
         this.clock = clock;
+        this.projections = List.copyOf(projections);
     }
 
     public AeronReplayCoordinator(
@@ -58,7 +79,8 @@ public class AeronReplayCoordinator implements ReplayEngine
             checkpoints,
             completionProofs,
             properties,
-            new SystemMonotonicClock());
+            new SystemMonotonicClock(),
+            List.of());
     }
 
     public AeronReplayCoordinator(
@@ -71,7 +93,8 @@ public class AeronReplayCoordinator implements ReplayEngine
             checkpoints,
             new CompletionProofRepository(properties),
             properties,
-            new SystemMonotonicClock());
+            new SystemMonotonicClock(),
+            List.of());
     }
 
     public ReplayResult replay(final ReplayCommand command)
@@ -148,7 +171,8 @@ public class AeronReplayCoordinator implements ReplayEngine
                     properties.getCheckpointEveryProcessedMessages(),
                     replayStart,
                     replayStop,
-                    progressListener);
+                    progressListener,
+                    projections);
                 // Make the initial/resume Position a real persisted recovery point
                 // before it is exposed as lastCheckpointPosition.
                 handler.save();

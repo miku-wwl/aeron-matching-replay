@@ -8,10 +8,12 @@ import io.github.mikuwwl.matchingreplay.domain.MatchingEvent;
 import io.github.mikuwwl.matchingreplay.failure.ReplayException;
 import io.github.mikuwwl.matchingreplay.failure.ReplayFailure;
 import io.github.mikuwwl.matchingreplay.failure.ReplayFailureCode;
+import io.github.mikuwwl.matchingreplay.projection.ReplayProjection;
 import io.github.mikuwwl.matchingreplay.projection.ProjectionState;
 import org.agrona.DirectBuffer;
 
 import java.time.Instant;
+import java.util.List;
 
 final class ReplayFragmentHandler implements FragmentHandler
 {
@@ -24,6 +26,7 @@ final class ReplayFragmentHandler implements FragmentHandler
     private final long replayStartPosition;
     private final long replayStopPosition;
     private final ReplayProgressListener progressListener;
+    private final List<ReplayProjection> projections;
     private final long initialAppliedEventsTotal;
     private final long initialDuplicatesTotal;
     private final long startedNs = System.nanoTime();
@@ -43,7 +46,8 @@ final class ReplayFragmentHandler implements FragmentHandler
         final int checkpointEveryProcessedMessages,
         final long replayStartPosition,
         final long replayStopPosition,
-        final ReplayProgressListener progressListener)
+        final ReplayProgressListener progressListener,
+        final List<ReplayProjection> projections)
     {
         this.state = state;
         this.checkpoints = checkpoints;
@@ -53,6 +57,7 @@ final class ReplayFragmentHandler implements FragmentHandler
         this.replayStartPosition = replayStartPosition;
         this.replayStopPosition = replayStopPosition;
         this.progressListener = progressListener;
+        this.projections = List.copyOf(projections);
         initialAppliedEventsTotal = state.appliedEventsTotal();
         initialDuplicatesTotal = state.duplicatesTotal();
         lastCheckpointPosition = replayStartPosition;
@@ -86,6 +91,10 @@ final class ReplayFragmentHandler implements FragmentHandler
             lastProgressAt = Instant.now();
             if (result == ProjectionState.ApplyResult.APPLIED)
             {
+                for (final ReplayProjection projection : projections)
+                {
+                    projection.apply(event);
+                }
                 if (firstAppliedSequenceThisRun == 0)
                 {
                     firstAppliedSequenceThisRun = event.eventSequence();
