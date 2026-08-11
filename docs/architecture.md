@@ -187,10 +187,6 @@ Projection 会按注入顺序消费已经通过顺序校验、且刚刚成功应
 触发这些 Projection。当前项目没有注册外部 Projection，因此默认仍然只有内存 Reference
 Projection。
 
-项目提供了一个仅用于 review 的 `ReplayAuditProjection` 示例。它需要激活
-`replay-audit` Spring Profile 才会注册，只输出 Debug 日志，不提供持久化 Audit 能力，也不应
-被误认为生产 Audit Store。
-
 如果扩展 Projection 写入 Database 或产生 Remote Side Effect，那么 Effect、
 Deduplication/Inbox Record 和 Checkpoint 必须处于同一个 Transactional Recovery Unit 中。
 单独的 Atomic Checkpoint File 无法让互不相关的外部写入自动具备幂等性。
