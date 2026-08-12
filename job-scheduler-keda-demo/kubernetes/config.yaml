@@ -4,8 +4,5 @@ metadata:
   name: demo-config
   namespace: job-demo
 data:
-  SPRING_DATASOURCE_URL: jdbc:postgresql://host.k3d.internal:15432/jobdemo
   SPRING_RABBITMQ_HOST: host.k3d.internal
   SPRING_RABBITMQ_PORT: "15673"
-  APP_SCHEDULER_POLL_DELAY: 1s
-  APP_SCHEDULER_BATCH_SIZE: "50"

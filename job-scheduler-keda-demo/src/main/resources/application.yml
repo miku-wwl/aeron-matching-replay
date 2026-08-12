@@ -1,16 +1,6 @@
 spring:
   application:
     name: job-scheduler-keda-demo
-  datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:15432/jobdemo}
-    username: ${SPRING_DATASOURCE_USERNAME:jobdemo}
-    password: ${SPRING_DATASOURCE_PASSWORD}
-    hikari:
-      maximum-pool-size: ${DB_POOL_SIZE:6}
-      minimum-idle: 1
-      connection-timeout: 10000
-  flyway:
-    enabled: true
   rabbitmq:
     host: ${SPRING_RABBITMQ_HOST:localhost}
     port: ${SPRING_RABBITMQ_PORT:15673}
@@ -26,10 +16,6 @@ spring:
         missing-queues-fatal: false
   lifecycle:
     timeout-per-shutdown-phase: 35s
-  task:
-    scheduling:
-      pool:
-        size: 2
   jackson:
     time-zone: UTC
 
@@ -39,9 +25,6 @@ server:
 
 app:
   role: ${APP_ROLE:api}
-  scheduler:
-    poll-delay: ${APP_SCHEDULER_POLL_DELAY:1s}
-    batch-size: ${APP_SCHEDULER_BATCH_SIZE:50}
   worker:
     id: ${APP_WORKER_ID:${HOSTNAME:local-worker}}
   rabbit:
@@ -59,7 +42,7 @@ management:
       show-details: always
       group:
         readiness:
-          include: readinessState,db,rabbit
+          include: readinessState,rabbit
         liveness:
           include: livenessState
   health:

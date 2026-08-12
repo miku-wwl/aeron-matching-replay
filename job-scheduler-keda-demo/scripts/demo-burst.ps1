@@ -10,24 +10,31 @@ Use-DemoKubectlContext
 $api = 'http://localhost:18080'
 $burst = Invoke-RestMethod `
     "$api/api/jobs/burst?count=$Count&durationMs=$DurationMs" -Method Post
-Write-Host "Created $($burst.count) jobs with prefix=$($burst.prefix)."
+Write-Host "Published $($burst.count) events with prefix=$($burst.prefix)."
 
 $peak = 0
-for ($i = 0; $i -lt 120; $i++) {
+$queueDrained = $false
+for ($i = 0; $i -lt 180; $i++) {
     $desiredText = kubectl get deployment demo-worker -n job-demo -o jsonpath='{.spec.replicas}'
     $readyText = kubectl get deployment demo-worker -n job-demo -o jsonpath='{.status.readyReplicas}'
     $desired = if ($desiredText) { [int]$desiredText } else { 0 }
     $ready = if ($readyText) { [int]$readyText } else { 0 }
     $peak = [Math]::Max($peak, $ready)
-    $sql = "SELECT count(*) FROM demo_job WHERE job_key LIKE '$($burst.prefix)-%' AND state='SUCCEEDED';"
-    $succeeded = [int](docker exec job-demo-postgres psql -qAt -U jobdemo -d jobdemo -c $sql)
-    Write-Host "desired=$desired ready=$ready succeeded=$succeeded/$Count"
-    if ($succeeded -eq $Count) { break }
+    $line = docker exec job-demo-rabbitmq rabbitmqctl list_queues -q name messages_ready messages_unacknowledged |
+        Where-Object { $_ -match '^demo\.jobs\.ready\s' }
+    $parts = $line -split '\s+'
+    $queueReady = if ($parts.Count -ge 2) { [int]$parts[1] } else { 0 }
+    $unacked = if ($parts.Count -ge 3) { [int]$parts[2] } else { 0 }
+    Write-Host "desired=$desired ready=$ready queueReady=$queueReady unacked=$unacked"
+    if ($peak -ge $TargetPods -and $queueReady -eq 0 -and $unacked -eq 0) {
+        $queueDrained = $true
+        break
+    }
     Start-Sleep -Seconds 2
 }
 
-if ($succeeded -ne $Count) { throw "Only $succeeded/$Count jobs succeeded." }
 if ($peak -lt $TargetPods) { throw "Expected $TargetPods ready workers, peak was $peak." }
+if (-not $queueDrained) { throw 'RabbitMQ ready queue did not drain.' }
 
 for ($i = 0; $i -lt 90; $i++) {
     $desiredText = kubectl get deployment demo-worker -n job-demo -o jsonpath='{.spec.replicas}'
@@ -37,4 +44,4 @@ for ($i = 0; $i -lt 90; $i++) {
 }
 if ($desired -ne 0) { throw 'KEDA did not scale workers back to zero.' }
 
-Write-Host "KEDA demo passed: 0 -> $peak -> 0; jobs=$Count."
+Write-Host "KEDA demo passed: 0 -> $peak -> 0; events=$Count."

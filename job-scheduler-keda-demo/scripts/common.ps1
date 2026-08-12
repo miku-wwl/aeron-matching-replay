@@ -22,14 +22,11 @@ function Get-DemoEnvironment {
             throw "Missing $path. Run scripts/up-infra.ps1 first."
         }
         $lines = @(
-            'POSTGRES_DB=jobdemo',
-            'POSTGRES_USER=jobdemo',
-            "POSTGRES_PASSWORD=$(New-DemoPassword)",
             'RABBITMQ_USERNAME=jobdemo',
             "RABBITMQ_PASSWORD=$(New-DemoPassword)"
         )
         [IO.File]::WriteAllLines($path, $lines, [Text.UTF8Encoding]::new($false))
-        Write-Host 'Created local credentials in .env.local (ignored by Git).'
+        Write-Host 'Created local RabbitMQ credentials in .env.local (ignored by Git).'
     }
 
     $values = @{}
@@ -41,29 +38,20 @@ function Get-DemoEnvironment {
         $values[$line.Substring(0, $separator)] = $line.Substring($separator + 1)
     }
 
-    $required = @('POSTGRES_DB', 'POSTGRES_USER', 'POSTGRES_PASSWORD',
-        'RABBITMQ_USERNAME', 'RABBITMQ_PASSWORD')
-    foreach ($name in $required) {
+    foreach ($name in @('RABBITMQ_USERNAME', 'RABBITMQ_PASSWORD')) {
         if (-not $values.ContainsKey($name) -or [string]::IsNullOrWhiteSpace($values[$name])) {
             throw "Required value $name is missing from $path."
         }
     }
-    foreach ($name in @('POSTGRES_DB', 'POSTGRES_USER', 'RABBITMQ_USERNAME')) {
-        if ($values[$name] -notmatch '^[A-Za-z0-9_]+$') {
-            throw "$name must contain only letters, digits, and underscores."
-        }
+    if ($values['RABBITMQ_USERNAME'] -notmatch '^[A-Za-z0-9_]+$') {
+        throw 'RABBITMQ_USERNAME must contain only letters, digits, and underscores.'
     }
-    foreach ($name in @('POSTGRES_PASSWORD', 'RABBITMQ_PASSWORD')) {
-        if ($values[$name] -notmatch '^[A-Za-z0-9]+$') {
-            throw "$name must contain only letters and digits."
-        }
+    if ($values['RABBITMQ_PASSWORD'] -notmatch '^[A-Za-z0-9]+$') {
+        throw 'RABBITMQ_PASSWORD must contain only letters and digits.'
     }
 
     return [pscustomobject]@{
         Path = $path
-        PostgresDatabase = $values['POSTGRES_DB']
-        PostgresUser = $values['POSTGRES_USER']
-        PostgresPassword = $values['POSTGRES_PASSWORD']
         RabbitUsername = $values['RABBITMQ_USERNAME']
         RabbitPassword = $values['RABBITMQ_PASSWORD']
     }
@@ -71,12 +59,6 @@ function Get-DemoEnvironment {
 
 function Sync-DemoInfrastructureCredentials {
     param([Parameter(Mandatory)] $DemoEnvironment)
-
-    $alterRole = "ALTER ROLE `"$($DemoEnvironment.PostgresUser)`" " +
-        "WITH PASSWORD '$($DemoEnvironment.PostgresPassword)';"
-    $alterRole | docker exec -i job-demo-postgres psql -v ON_ERROR_STOP=1 `
-        -U $DemoEnvironment.PostgresUser -d $DemoEnvironment.PostgresDatabase | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Could not synchronize the Postgres password.' }
 
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
         docker exec job-demo-rabbitmq rabbitmq-diagnostics -q check_running *> $null
@@ -87,15 +69,13 @@ function Sync-DemoInfrastructureCredentials {
         }
         Start-Sleep -Seconds 2
     }
-    throw 'Could not synchronize the RabbitMQ password after waiting for RabbitMQ startup.'
+    throw 'Could not synchronize the RabbitMQ password after waiting for startup.'
 }
 
 function Set-DemoKubernetesSecrets {
     param([Parameter(Mandatory)] $DemoEnvironment)
 
     $demoSecret = kubectl create secret generic demo-secret -n job-demo `
-        --from-literal="SPRING_DATASOURCE_USERNAME=$($DemoEnvironment.PostgresUser)" `
-        --from-literal="SPRING_DATASOURCE_PASSWORD=$($DemoEnvironment.PostgresPassword)" `
         --from-literal="SPRING_RABBITMQ_USERNAME=$($DemoEnvironment.RabbitUsername)" `
         --from-literal="SPRING_RABBITMQ_PASSWORD=$($DemoEnvironment.RabbitPassword)" `
         --dry-run=client -o yaml

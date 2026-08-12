@@ -14,9 +14,9 @@ $demoEnvironment = Get-DemoEnvironment -CreateIfMissing
 if ($RemoveData) {
     docker compose --env-file $demoEnvironment.Path --project-directory $demoRoot `
         -f (Join-Path $demoRoot 'docker-compose.yml') down --volumes
-    Write-Host 'Removed the demo containers and the two named demo data volumes.'
+    Write-Host 'Removed the demo container and the RabbitMQ data volume.'
 } else {
     docker compose --env-file $demoEnvironment.Path --project-directory $demoRoot `
         -f (Join-Path $demoRoot 'docker-compose.yml') down
-    Write-Host 'Removed the demo containers; named Postgres/RabbitMQ data volumes were preserved.'
+    Write-Host 'Removed the demo container; the RabbitMQ data volume was preserved.'
 }
