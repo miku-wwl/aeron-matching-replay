@@ -15,16 +15,14 @@ if (-not $ready) { throw 'API did not become healthy.' }
 $jobKey = 'smoke-' + [Guid]::NewGuid().ToString('N').Substring(0, 10)
 $body = @{
     jobKey = $jobKey
-    totalUnits = 50
-    unitDelayMs = 10
-    checkpointEvery = 10
+    durationMs = 500
 } | ConvertTo-Json
 $created = Invoke-RestMethod "$api/api/jobs" -Method Post -ContentType 'application/json' -Body $body
 Write-Host "Created jobId=$($created.jobId), jobKey=$jobKey"
 
 for ($i = 0; $i -lt 120; $i++) {
     $job = Invoke-RestMethod "$api/api/jobs/$($created.jobId)"
-    Write-Host "state=$($job.state), attempt=$($job.attemptCount), checkpoint=$($job.lastCompletedUnit)"
+    Write-Host "state=$($job.state), worker=$($job.workerId)"
     if ($job.state -eq 'SUCCEEDED') {
         Write-Host 'Smoke test passed.'
         exit 0

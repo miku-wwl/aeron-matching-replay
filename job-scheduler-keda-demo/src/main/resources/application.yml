@@ -16,11 +16,9 @@ spring:
     port: ${SPRING_RABBITMQ_PORT:15673}
     username: ${SPRING_RABBITMQ_USERNAME:jobdemo}
     password: ${SPRING_RABBITMQ_PASSWORD}
-    publisher-confirm-type: correlated
     connection-timeout: 10s
     listener:
       simple:
-        acknowledge-mode: manual
         prefetch: 1
         concurrency: 1
         max-concurrency: 1
@@ -44,24 +42,16 @@ app:
   scheduler:
     poll-delay: ${APP_SCHEDULER_POLL_DELAY:1s}
     batch-size: ${APP_SCHEDULER_BATCH_SIZE:50}
-    outbox-delay: ${APP_OUTBOX_DELAY:250ms}
   worker:
     id: ${APP_WORKER_ID:${HOSTNAME:local-worker}}
-    lease-duration: ${APP_LEASE_DURATION:30s}
-    heartbeat-interval: ${APP_HEARTBEAT_INTERVAL:10s}
-    busy-requeue-delay: ${APP_BUSY_REQUEUE_DELAY:1s}
   rabbit:
-    exchange: demo.jobs.exchange
     ready-queue: demo.jobs.ready
-    dlq: demo.jobs.dlq
-    ready-routing-key: jobs.ready
-    dlq-routing-key: jobs.dlq
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus,metrics
+        include: health,info,metrics
   endpoint:
     health:
       probes:

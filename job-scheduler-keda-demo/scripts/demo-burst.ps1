@@ -1,30 +1,40 @@
 param(
-    [int] $Count = 50,
-    [int] $TotalUnits = 200,
-    [int] $UnitDelayMs = 20
+    [int] $Count = 500,
+    [int] $DurationMs = 1000,
+    [int] $TargetPods = 20
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 Use-DemoKubectlContext
 
-$uri = "http://localhost:18080/api/jobs/burst?count=$Count&totalUnits=$TotalUnits&unitDelayMs=$UnitDelayMs&checkpointEvery=25"
-$created = Invoke-RestMethod $uri -Method Post
-$prefix = $created[0].jobKey -replace '-1$', ''
-Write-Host "Created $($created.Count) jobs with prefix=$prefix. Watching queue-driven scaling for up to 3 minutes."
+$api = 'http://localhost:18080'
+$burst = Invoke-RestMethod `
+    "$api/api/jobs/burst?count=$Count&durationMs=$DurationMs" -Method Post
+Write-Host "Created $($burst.count) jobs with prefix=$($burst.prefix)."
 
-for ($i = 0; $i -lt 90; $i++) {
-    $succeededSql = "SELECT count(*) FROM demo_job WHERE job_key LIKE '$prefix-%' AND state='SUCCEEDED';"
-    $failedSql = "SELECT count(*) FROM demo_job WHERE job_key LIKE '$prefix-%' AND state='FAILED';"
-    $succeeded = [int](docker exec job-demo-postgres psql -qAt -U jobdemo -d jobdemo -c $succeededSql)
-    $failed = [int](docker exec job-demo-postgres psql -qAt -U jobdemo -d jobdemo -c $failedSql)
-    $replicas = kubectl get deployment demo-worker -n job-demo -o jsonpath='{.status.replicas}'
-    $ready = kubectl get deployment demo-worker -n job-demo -o jsonpath='{.status.readyReplicas}'
-    Write-Host "workerReplicas=$replicas ready=$ready burstSucceeded=$succeeded/$Count burstFailed=$failed"
-    if ($failed -gt 0) { throw "$failed burst jobs failed." }
+$peak = 0
+for ($i = 0; $i -lt 120; $i++) {
+    $desiredText = kubectl get deployment demo-worker -n job-demo -o jsonpath='{.spec.replicas}'
+    $readyText = kubectl get deployment demo-worker -n job-demo -o jsonpath='{.status.readyReplicas}'
+    $desired = if ($desiredText) { [int]$desiredText } else { 0 }
+    $ready = if ($readyText) { [int]$readyText } else { 0 }
+    $peak = [Math]::Max($peak, $ready)
+    $sql = "SELECT count(*) FROM demo_job WHERE job_key LIKE '$($burst.prefix)-%' AND state='SUCCEEDED';"
+    $succeeded = [int](docker exec job-demo-postgres psql -qAt -U jobdemo -d jobdemo -c $sql)
+    Write-Host "desired=$desired ready=$ready succeeded=$succeeded/$Count"
     if ($succeeded -eq $Count) { break }
     Start-Sleep -Seconds 2
 }
 
-if ($succeeded -ne $Count) { throw "Timed out with only $succeeded/$Count burst jobs succeeded." }
+if ($succeeded -ne $Count) { throw "Only $succeeded/$Count jobs succeeded." }
+if ($peak -lt $TargetPods) { throw "Expected $TargetPods ready workers, peak was $peak." }
 
-kubectl get scaledobject,hpa,deploy,pods -n job-demo
+for ($i = 0; $i -lt 90; $i++) {
+    $desiredText = kubectl get deployment demo-worker -n job-demo -o jsonpath='{.spec.replicas}'
+    $desired = if ($desiredText) { [int]$desiredText } else { 0 }
+    if ($desired -eq 0) { break }
+    Start-Sleep -Seconds 2
+}
+if ($desired -ne 0) { throw 'KEDA did not scale workers back to zero.' }
+
+Write-Host "KEDA demo passed: 0 -> $peak -> 0; jobs=$Count."
