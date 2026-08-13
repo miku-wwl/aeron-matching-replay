@@ -25,16 +25,6 @@
 直接发布少一次数据库写入和一次 Scheduler 扫描，延迟低、代码少，特别适合本 Demo 的高吞吐 KEDA 实验。
 代价是没有最终状态查询，也没有“数据库已提交但消息未发出”的恢复点；当前版本还没有 Outbox。
 
-## 动手观察
-
-```powershell
-$body = @{ jobKey = 'direct-001'; durationMs = 5000 } | ConvertTo-Json
-Invoke-RestMethod http://localhost:18080/api/jobs -Method Post `
-  -ContentType application/json -Body $body
-rabbitmqadmin --host localhost --port 15674 --username jobdemo --password $env:RABBITMQ_PASSWORD `
-  list queues name messages_ready messages_unacknowledged
-```
-
 ## 练习
 
 1. 如果要支持“10 分钟后再执行”，这条直接发布链路还缺什么组件？

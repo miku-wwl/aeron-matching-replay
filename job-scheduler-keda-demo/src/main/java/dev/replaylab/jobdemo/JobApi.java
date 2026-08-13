@@ -3,6 +3,7 @@ package dev.replaylab.jobdemo;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Positive;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -67,7 +68,8 @@ public class JobApi {
         }
     }
 
-    public record CreateJobRequest(@NotBlank String jobKey, @Positive Integer durationMs) {
+    public record CreateJobRequest(@NotBlank String jobKey,
+                                   @Positive @Max(60_000) Integer durationMs) {
     }
 
     public record BurstResult(String prefix, int count, int durationMs) {
