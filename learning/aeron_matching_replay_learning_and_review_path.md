@@ -1773,6 +1773,24 @@ recoverySource
 
 ---
 
+## 练习 7：替换成数据库 Projection
+
+假设 `ProjectionState.apply()` 改为写 PostgreSQL。
+
+回答：
+
+1. DB Commit 成功、Checkpoint 失败怎么办？
+2. Checkpoint 成功、DB Commit 失败怎么办？
+3. Inbox 表放在哪里？
+4. Business Effect 和 Offset 如何处于同一事务？
+5. Duplicate 如何避免重复副作用？
+
+详细设计见：
+
+```text
+learning/lab-07-postgres-projection-transaction-design.md
+```
+
 ---
 
 # 11. 面试与 Review 自测题
