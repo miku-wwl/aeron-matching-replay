@@ -330,6 +330,22 @@ public final class EmbeddedArchiveFixture implements AutoCloseable
             return eventEndPositions.get(indexOf(eventSequence));
         }
 
+        /**
+         * Returns the end position for the event at its zero-based recording
+         * index. Unlike {@link #positionAfterSequence(long)}, this method can
+         * distinguish two recorded events that carry the same business
+         * sequence and is therefore useful for duplicate-sequence exercises.
+         */
+        public long positionAfterEventIndex(final int eventIndex)
+        {
+            if (eventIndex < 0 || eventIndex >= eventEndPositions.size())
+            {
+                throw new IllegalArgumentException(
+                    "eventIndex must be within [0, " + eventEndPositions.size() + ")");
+            }
+            return eventEndPositions.get(eventIndex);
+        }
+
         public long digestAfterSequence(final long eventSequence)
         {
             return replayDigests.get(indexOf(eventSequence));
